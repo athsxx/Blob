@@ -1,0 +1,76 @@
+{
+  "rois": [
+    {
+      "roi_id": "TEST_H1",
+      "face": "TEST",
+      "hole_id": "H1",
+      "shape": "circle",
+      "cx": 638,
+      "cy": 269,
+      "radius": 18
+    },
+    {
+      "roi_id": "TEST_H2",
+      "face": "TEST",
+      "hole_id": "H2",
+      "shape": "circle",
+      "cx": 379,
+      "cy": 439,
+      "radius": 40
+    },
+    {
+      "roi_id": "TEST_H3",
+      "face": "TEST",
+      "hole_id": "H3",
+      "shape": "circle",
+      "cx": 525,
+      "cy": 256,
+      "radius": 20
+    },
+    {
+      "roi_id": "TEST_H4",
+      "face": "TEST",
+      "hole_id": "H4",
+      "shape": "circle",
+      "cx": 693,
+      "cy": 258,
+      "radius": 18
+    },
+    {
+      "roi_id": "TEST_H5",
+      "face": "TEST",
+      "hole_id": "H5",
+      "shape": "circle",
+      "cx": 807,
+      "cy": 299,
+      "radius": 18
+    },
+    {
+      "roi_id": "TEST_H6",
+      "face": "TEST",
+      "hole_id": "H6",
+      "shape": "circle",
+      "cx": 751,
+      "cy": 389,
+      "radius": 18
+    },
+    {
+      "roi_id": "TEST_H7",
+      "face": "TEST",
+      "hole_id": "H7",
+      "shape": "circle",
+      "cx": 840,
+      "cy": 538,
+      "radius": 22
+    },
+    {
+      "roi_id": "TEST_H8",
+      "face": "TEST",
+      "hole_id": "H8",
+      "shape": "circle",
+      "cx": 840,
+      "cy": 398,
+      "radius": 14
+    }
+  ]
+}

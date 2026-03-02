@@ -1,0 +1,52 @@
+{
+  "metric": "mean",
+  "cal_frames": 30,
+  "suggested_delta": 0.06164965986397419,
+  "rois": {
+    "A2": {
+      "baseline_off": 65.555,
+      "baseline_on": 65.53,
+      "delta": -0.026
+    },
+    "A3": {
+      "baseline_off": 37.057,
+      "baseline_on": 37.035,
+      "delta": -0.022
+    },
+    "H3": {
+      "baseline_off": 42.401,
+      "baseline_on": 42.459,
+      "delta": 0.058
+    },
+    "H4": {
+      "baseline_off": 38.706,
+      "baseline_on": 38.792,
+      "delta": 0.085
+    },
+    "H5": {
+      "baseline_off": 42.367,
+      "baseline_on": 42.377,
+      "delta": 0.01
+    },
+    "H6": {
+      "baseline_off": 43.005,
+      "baseline_on": 43.185,
+      "delta": 0.18
+    },
+    "H7": {
+      "baseline_off": 53.126,
+      "baseline_on": 53.106,
+      "delta": -0.02
+    },
+    "H8": {
+      "baseline_off": 49.903,
+      "baseline_on": 49.935,
+      "delta": 0.032
+    },
+    "H9": {
+      "baseline_off": 74.16,
+      "baseline_on": 74.222,
+      "delta": 0.062
+    }
+  }
+}

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# Virtual environment
+venv/
+
+# Logs (keep dir, ignore contents)
+logs/*.log
+logs/*.jsonl
+logs/*.csv
+src/logs/*.log
+
+# Debug output
+camera_indices_check/

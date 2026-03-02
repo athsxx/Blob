@@ -1,0 +1,90 @@
+{
+  "cameras": [
+    {
+      "usb_index": 0,
+      "face": "A",
+      "config": "hole_positions_cam0.json",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "backend": "auto",
+      "enabled": true,
+      "target_fps": 30,
+      "reject_high_res": false,
+      "reject_high_fps": false
+    },
+    {
+      "usb_index": 1,
+      "face": "C",
+      "config": "hole_positions_cam2.json",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "backend": "auto",
+      "enabled": true,
+      "target_fps": 30,
+      "reject_high_res": false,
+      "reject_high_fps": false
+    },
+    {
+      "usb_index": 2,
+      "face": "D",
+      "config": "hole_positions_cam1.json",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "backend": "auto",
+      "enabled": true,
+      "target_fps": 30,
+      "reject_high_res": false,
+      "reject_high_fps": false
+    },
+    {
+      "usb_index": 3,
+      "face": "B",
+      "config": "hole_positions_cam3.json",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "backend": "auto",
+      "enabled": true,
+      "target_fps": 30,
+      "reject_high_res": false,
+      "reject_high_fps": false
+    },
+    {
+      "usb_index": 4,
+      "face": "E",
+      "config": "hole_positions_cam4.json",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "backend": "auto",
+      "enabled": true,
+      "target_fps": 30,
+      "reject_high_res": false,
+      "reject_high_fps": false
+    },
+    {
+      "usb_index": 5,
+      "face": "F",
+      "config": "hole_positions_cam5.json",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "backend": "auto",
+      "enabled": false,
+      "target_fps": 30,
+      "reject_high_res": false,
+      "reject_high_fps": false
+    }
+  ],
+  "_hardware": {
+    "camera_model": "USB Webcams",
+    "resolution": [
+      640,
+      480
+    ],
+    "fps": 30
+  }
+}
