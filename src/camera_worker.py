@@ -20,21 +20,6 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 
-# Import laser detection library
-try:
-    from laser_detector_lib import (
-        DetectionResult,
-        DetectionSettings
-    )
-except ImportError:
-    # When running from src/ directory
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from laser_detector_lib import (
-        DetectionResult,
-        DetectionSettings
-    )
-
 # HSV detection settings for green laser
 GREEN_LASER_SETTINGS = {
     'hue_min': 35,

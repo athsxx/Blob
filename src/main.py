@@ -48,7 +48,10 @@ def main():
     parser = argparse.ArgumentParser(description='Multi-Camera Manifold Inspection')
     parser.add_argument('--no-display', action='store_true', help='Run without preview')
     parser.add_argument('--cv', action='store_true', help='Force OpenCV dashboard (no PyQt6)')
-    parser.add_argument('--config-dir', default='config', help='Config directory path')
+    # Resolve config dir relative to project root (parent of src/)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    default_config_dir = os.path.join(project_root, 'config')
+    parser.add_argument('--config-dir', default=default_config_dir, help='Config directory path')
     args = parser.parse_args()
 
     # Initialize Logger
