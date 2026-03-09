@@ -583,59 +583,55 @@ class InstructionPanel(QFrame):
 # ──────────────────────────────────────────────
 
 class OverrideDialog(QDialog):
-    """Manual override dialog."""
+    """Simplified override dialog — applies to current active rule only."""
 
-    def __init__(self, rule_ids: list, parent=None):
+    def __init__(self, current_rule_id: str, parent=None):
         super().__init__(parent)
+        self._rule_id = current_rule_id
         self.setWindowTitle("Manual Override")
-        self.setFixedSize(360, 200)
+        self.setFixedSize(360, 180)
         self.setStyleSheet(DARK_STYLESHEET)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        title = QLabel("Manual Inspection Override")
+        title = QLabel("Override Current Rule")
         title.setStyleSheet("color: #f0f6fc; font-size: 14px; font-weight: bold;")
         layout.addWidget(title)
 
-        rule_row = QHBoxLayout()
-        rule_row.addWidget(QLabel("Rule:"))
-        self.rule_combo = QComboBox()
-        self.rule_combo.addItems(rule_ids)
-        self.rule_combo.setMinimumWidth(200)
-        rule_row.addWidget(self.rule_combo, stretch=1)
-        layout.addLayout(rule_row)
+        rule_lbl = QLabel(f"Rule:  {current_rule_id}")
+        rule_lbl.setStyleSheet("color: #58a6ff; font-size: 13px; font-weight: bold;")
+        layout.addWidget(rule_lbl)
 
-        radio_row = QHBoxLayout()
-        radio_row.addWidget(QLabel("Result:"))
-        self.radio_pass = QRadioButton("PASS")
-        self.radio_pass.setStyleSheet("color: #3fb950; font-weight: bold;")
-        self.radio_fail = QRadioButton("FAIL")
-        self.radio_fail.setStyleSheet("color: #f85149; font-weight: bold;")
-        self.radio_pass.setChecked(True)
-        grp = QButtonGroup(self)
-        grp.addButton(self.radio_pass)
-        grp.addButton(self.radio_fail)
-        radio_row.addWidget(self.radio_pass)
-        radio_row.addWidget(self.radio_fail)
-        radio_row.addStretch()
-        layout.addLayout(radio_row)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(16)
+        self.btn_pass = QPushButton("✅  PASS")
+        self.btn_pass.setStyleSheet(
+            "QPushButton { background-color: #238636; color: #fff; font-weight: bold;"
+            "font-size: 14px; padding: 10px 30px; border: none; border-radius: 6px; }"
+            "QPushButton:hover { background-color: #2ea043; }"
+        )
+        self.btn_pass.clicked.connect(lambda: self._finish("PASS"))
+        self.btn_fail = QPushButton("❌  FAIL")
+        self.btn_fail.setStyleSheet(
+            "QPushButton { background-color: #da3633; color: #fff; font-weight: bold;"
+            "font-size: 14px; padding: 10px 30px; border: none; border-radius: 6px; }"
+            "QPushButton:hover { background-color: #f85149; }"
+        )
+        self.btn_fail.clicked.connect(lambda: self._finish("FAIL"))
+        btn_row.addWidget(self.btn_pass)
+        btn_row.addWidget(self.btn_fail)
+        layout.addLayout(btn_row)
 
-        btn_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        btn_box.setStyleSheet(
-            "QPushButton { background-color: #21262d; color: #e6edf3; "
-            "border: 1px solid #30363d; border-radius: 4px; padding: 5px 14px; }"
-            "QPushButton:hover { background-color: #30363d; }"
-        )
-        btn_box.accepted.connect(self.accept)
-        btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
+        self._result = None
+
+    def _finish(self, result: str):
+        self._result = result
+        self.accept()
 
     def get_selection(self):
-        return self.rule_combo.currentText(), ("PASS" if self.radio_pass.isChecked() else "FAIL")
+        return self._rule_id, self._result or "PASS"
 
 
 # ──────────────────────────────────────────────
@@ -785,16 +781,18 @@ class ModeSelectionPage(QWidget):
         cust_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.btn_custom = QPushButton("⚙  Custom Inspection")
-        self.btn_custom.setEnabled(False)
+        self.btn_custom.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_custom.setStyleSheet("""
             QPushButton {
-                background-color: #21262d; color: #484f58; font-weight: bold;
-                font-size: 20px; padding: 25px 50px; border: 2px solid #30363d; border-radius: 8px;
+                background-color: #1f6feb; color: #ffffff; font-weight: bold;
+                font-size: 20px; padding: 25px 50px; border: none; border-radius: 8px;
                 min-width: 300px; min-height: 100px;
             }
+            QPushButton:hover { background-color: #388bfd; }
         """)
+        self.btn_custom.clicked.connect(lambda: self.sig_mode_selected.emit("custom"))
 
-        cust_desc = QLabel("Define your own inspection order.\nSelect specific holes and rules\nto test manually.\n\n[ Coming Soon ]")
+        cust_desc = QLabel("Test a single connectivity rule.\nSelect which rule to inspect\nand verify manually.")
         cust_desc.setStyleSheet("color: #3d444d; font-size: 14px; background-color: transparent; line-height: 1.5;")
         cust_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -815,6 +813,115 @@ class ModeSelectionPage(QWidget):
         layout.addWidget(body, stretch=1)
 
 
+class RuleSelectionPage(QWidget):
+    """Page shown in Custom mode to pick a single rule to inspect."""
+    sig_rule_selected = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ruleSelectionPage")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Header
+        header = QFrame()
+        header.setStyleSheet("background-color: #161b22;")
+        header.setFixedHeight(120)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(40, 30, 40, 30)
+        header_layout.setSpacing(8)
+
+        title_lbl = QLabel("⚙  SELECT RULE TO INSPECT")
+        title_lbl.setStyleSheet(
+            "color: #f0f6fc; font-size: 28px; font-weight: bold; "
+            "letter-spacing: 2px; background-color: transparent;"
+        )
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header_layout.addWidget(title_lbl)
+        layout.addWidget(header)
+
+        # Body
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        body_layout.setSpacing(20)
+
+        # Rule dropdown
+        self.rule_combo = QComboBox()
+        self.rule_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #21262d; color: #ffffff; font-weight: bold;
+                font-size: 16px; padding: 14px 24px; border: 2px solid #30363d;
+                border-radius: 8px; min-width: 500px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: #21262d; color: #ffffff;
+                font-size: 14px; selection-background-color: #388bfd;
+            }
+        """)
+        self.rule_combo.currentTextChanged.connect(self._on_rule_changed)
+        body_layout.addWidget(self.rule_combo)
+
+        # Rule details panel
+        self.detail_lbl = QLabel("Select a rule to see details")
+        self.detail_lbl.setStyleSheet(
+            "color: #8b949e; font-size: 14px; background-color: #161b22; "
+            "padding: 20px; border-radius: 8px; min-width: 500px;"
+        )
+        self.detail_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.detail_lbl.setWordWrap(True)
+        self.detail_lbl.setMinimumHeight(120)
+        body_layout.addWidget(self.detail_lbl)
+
+        # Start button
+        self.btn_start = QPushButton("▶  START INSPECTION")
+        self.btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_start.setStyleSheet("""
+            QPushButton {
+                background-color: #238636; color: #ffffff; font-weight: bold;
+                font-size: 18px; padding: 18px 40px; border: none; border-radius: 8px;
+                min-width: 300px;
+            }
+            QPushButton:hover { background-color: #2ea043; }
+        """)
+        self.btn_start.clicked.connect(
+            lambda: self.sig_rule_selected.emit(self.rule_combo.currentText())
+        )
+        body_layout.addWidget(self.btn_start, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        layout.addWidget(body, stretch=1)
+
+        # Store rules for details lookup
+        self._rules_data: List[Dict] = []
+
+    def load_rules(self, rules: List[Dict]):
+        """Populate dropdown from list of rule dicts."""
+        self._rules_data = rules
+        self.rule_combo.clear()
+        for r in rules:
+            self.rule_combo.addItem(r.get('rule_id', '???'))
+        if rules:
+            self._on_rule_changed(rules[0].get('rule_id', ''))
+
+    def _on_rule_changed(self, rule_id: str):
+        """Update detail panel when selection changes."""
+        for r in self._rules_data:
+            if r.get('rule_id') == rule_id:
+                inp = r.get('input', {})
+                outs = r.get('expected_outputs', [])
+                detail = f"Input:  Face {inp.get('face', '?')}  ·  Hole {inp.get('hole_id', '?')}\n\n"
+                detail += "Expected Outputs:\n"
+                for o in outs:
+                    mand = "  (mandatory)" if o.get('mandatory', True) else "  (optional)"
+                    detail += f"  → Face {o.get('face', '?')}  ·  Hole {o.get('hole_id', '?')}{mand}\n"
+                self.detail_lbl.setText(detail)
+                return
+        self.detail_lbl.setText("No rule selected")
+
+
 # ──────────────────────────────────────────────
 # DashboardWindow
 # ──────────────────────────────────────────────
@@ -828,6 +935,7 @@ class DashboardWindow(QMainWindow):
     sig_resume   = pyqtSignal()
     sig_override = pyqtSignal(str, str)
     sig_mode_selected = pyqtSignal(str)
+    sig_rule_selected = pyqtSignal(str)
     sig_manifold_selected = pyqtSignal(str)
 
     def __init__(self, total_rules: int = 0,
@@ -859,8 +967,10 @@ class DashboardWindow(QMainWindow):
         self._rule_ids: list = []
         self._guided_sequence: List[Dict] = []
         self._current_step_index: int = 0
+        self._active_rule_id: Optional[str] = None
 
         self.selected_manifold = None
+        self.selected_rule_id: Optional[str] = None
         self.selected_mode = None
 
         # ── Central Widget & Global Layout ──
@@ -915,6 +1025,11 @@ class DashboardWindow(QMainWindow):
         # Stack 2: Live Dashboard
         self.dashboard_page = QWidget()
         self.stacked_widget.addWidget(self.dashboard_page)
+
+        # Stack 3: Rule Selection (Custom mode only)
+        self.rule_page = RuleSelectionPage()
+        self.rule_page.sig_rule_selected.connect(self._on_rule_selected)
+        self.stacked_widget.addWidget(self.rule_page)
 
         root = QVBoxLayout(self.dashboard_page)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1043,13 +1158,28 @@ class DashboardWindow(QMainWindow):
 
     def _on_manifold_selected(self, manifold: str):
         self.selected_manifold = manifold
+        if self.selected_mode == "custom":
+            # Custom mode: go to rule selection page first
+            self.stacked_widget.setCurrentIndex(3)
+        else:
+            # Sequential mode: go straight to dashboard
+            self.stacked_widget.setCurrentIndex(2)
+            self.global_header.show()
+            self.header_status.show()
+            self.clock_lbl.show()
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+            self.sig_manifold_selected.emit(manifold)
+
+    def _on_rule_selected(self, rule_id: str):
+        self.selected_rule_id = rule_id
         self.stacked_widget.setCurrentIndex(2)
         self.global_header.show()
         self.header_status.show()
         self.clock_lbl.show()
         from PyQt6.QtWidgets import QApplication
-        QApplication.processEvents() # Force Qt to paint the dashboard before main.py sleeps
-        self.sig_manifold_selected.emit(manifold) # Signal main.py that UI setup is complete
+        QApplication.processEvents()
+        self.sig_manifold_selected.emit(self.selected_manifold)
 
     # ── Helpers ─────────────────────────────────
 
@@ -1137,6 +1267,7 @@ class DashboardWindow(QMainWindow):
             self._current_step_index = step_index
             self.step_list.set_active(step_index)
             step = self._guided_sequence[step_index]
+            self._active_rule_id = step.get('rule_id')
             self.instruction_panel.show_step(step, total)
             self.progress_bar.setValue(step_index)
             
@@ -1250,12 +1381,18 @@ class DashboardWindow(QMainWindow):
         )
 
     def _on_override(self):
-        if not self._rule_ids:
+        # Use the current active rule (no dropdown needed)
+        rule_id = self._active_rule_id
+        if not rule_id:
+            # Try to get from guided sequence
+            if self._guided_sequence and 0 <= self._current_step_index < len(self._guided_sequence):
+                rule_id = self._guided_sequence[self._current_step_index].get('rule_id')
+        if not rule_id:
             return
-        dlg = OverrideDialog(self._rule_ids, self)
+        dlg = OverrideDialog(rule_id, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            rule_id, result = dlg.get_selection()
-            self.sig_override.emit(rule_id, result)
+            rid, result = dlg.get_selection()
+            self.sig_override.emit(rid, result)
 
 
 # ──────────────────────────────────────────────

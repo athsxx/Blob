@@ -153,7 +153,7 @@ def main():
         dashboard.progress_bar.setRange(0, total_rules)
         dashboard.progress_bar.setFormat(f"%v / {total_rules} steps")
 
-    # ── Build guided sequence (Sequential mode) ──
+    # ── Build guided sequence based on mode ──
     guided_sequence = []
     if inspection_mode == "sequential":
         available_faces = {'A', 'B', 'C', 'D', 'E', 'F'}  # All 6 faces
@@ -161,10 +161,65 @@ def main():
         engine.guided_mode = True
         if guided_sequence:
             engine.set_guided_step(0)
-        print(f"[Main] Guided sequence: {len(guided_sequence)} steps (Face F output rules excluded)")
+        print(f"[Main] Guided sequence: {len(guided_sequence)} steps")
+
+    elif inspection_mode == "custom":
+        # Custom mode: populate rule selection page and wait for operator to pick a rule
+        if dashboard and qt_app:
+            dashboard.rule_page.load_rules(engine.rules)
+            print("[Main] Waiting for operator to select a rule...")
+            from PyQt6.QtCore import QEventLoop
+            rule_loop = QEventLoop()
+
+            def on_rule_selected(rule_id):
+                dashboard.selected_rule_id = rule_id
+                rule_loop.quit()
+
+            dashboard.rule_page.sig_rule_selected.connect(on_rule_selected)
+            rule_loop.exec()
+
+            selected_rule_id = dashboard.selected_rule_id
+            if not selected_rule_id:
+                print("[Main] No rule selected. Exiting.")
+                return
+
+            print(f"[Main] Custom mode: selected rule '{selected_rule_id}'")
+            logger.log_system("INFO", f"Custom inspection: rule {selected_rule_id}")
+
+            # Build a single-rule guided sequence
+            available_faces = {'A', 'B', 'C', 'D', 'E', 'F'}
+            full_sequence = engine.build_guided_sequence(available_faces)
+            # Filter to just the selected rule
+            guided_sequence = [s for s in full_sequence if s.get('rule_id') == selected_rule_id]
+            if not guided_sequence:
+                # Fallback: build from the raw rule
+                for rule in engine.rules:
+                    if rule.get('rule_id') == selected_rule_id:
+                        inp = rule.get('input', {})
+                        outs = rule.get('expected_outputs', [])
+                        guided_sequence = [{
+                            'step_num': 1,
+                            'rule_id': selected_rule_id,
+                            'input_face': inp.get('face', ''),
+                            'input_hole': inp.get('hole_id', ''),
+                            'expected_outputs': [{'face': o.get('face', ''), 'hole_id': o.get('hole_id', '')} for o in outs],
+                        }]
+                        break
+
+            engine.guided_mode = True
+            if guided_sequence:
+                engine.set_guided_step(0)
+
+            # Update dashboard progress bar for 1 step
+            if dashboard:
+                dashboard.progress_bar.setRange(0, len(guided_sequence))
+                dashboard.progress_bar.setFormat(f"%v / {len(guided_sequence)} steps")
 
     if dashboard and guided_sequence and hasattr(dashboard, 'load_guided_sequence'):
         dashboard.load_guided_sequence(guided_sequence)
+        # Track active rule on dashboard for override button
+        if guided_sequence:
+            dashboard._active_rule_id = guided_sequence[0].get('rule_id')
 
 
     # ── Start camera workers ──
