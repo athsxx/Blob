@@ -101,89 +101,92 @@ def main():
     inspection_mode = "sequential"  # default
     selected_manifold = "DALIA"     # default
     
-    # Wait for mode and manifold selection from integrated Start Pages
+    # Wait for setup completion (Mode -> Manifold -> (Optional) Rule)
     if qt_app:
-        print("[Main] Waiting for operator to select Mode and Manifold...")
+        print("[Main] Waiting for operator setup...")
         from PyQt6.QtCore import QEventLoop
-        loop = QEventLoop()
-        
-        def on_manifold_selected(manifold):
-            dashboard.selected_manifold = manifold
-            loop.quit()  # Break out of the event loop after both are selected
+
+        while True:
+            # Loop 1: Wait for Mode & Manifold
+            loop = QEventLoop()
             
-        dashboard.sig_manifold_selected.connect(on_manifold_selected)
-        loop.exec()  # Run full Qt event loop to ensure UI is responsive
-        
-        inspection_mode = getattr(dashboard, 'selected_mode', None)
-        selected_manifold = getattr(dashboard, 'selected_manifold', None)
-        
-        if not inspection_mode or not selected_manifold:
-            print("[Main] Operator closed window before completing setup. Exiting.")
-            return
+            def on_manifold_selected(manifold):
+                dashboard.selected_manifold = manifold
+                loop.quit()
 
-    # ── Dynamic Configuration Loading ──
-    print(f"\n[Main] Operator Selected: Mode={inspection_mode}, Manifold={selected_manifold}")
-    
-    # Map manifold to specific rule files using absolute paths
-    manifold_rules = {
-        "DALIA": os.path.join(project_root, "config", "DALIA", "connectivity_rules.json"),
-        "Manifold 2": os.path.join(project_root, "config", "DALIA", "connectivity_rules.json"), # Default fallback for POC
-        "Manifold 3": os.path.join(project_root, "config", "DALIA", "connectivity_rules.json")  # Default fallback for POC
-    }
-    
-    rule_file = manifold_rules.get(selected_manifold, os.path.join(project_root, "config", "DALIA", "connectivity_rules.json"))
-    
-    # Initialize Logic Engine dynamically
-    engine = LogicEngine(rule_file)
-    total_rules = len(engine.rules)
-    print(f"[Main] Logic Engine initialized with {total_rules} rules for {selected_manifold}.")
-    logger.log_system("INFO", f"Logic Engine initialized with {total_rules} rules for {selected_manifold}")
-    
-    # Update camera configs based on Manifold (if they had specific folders, we'd inject it here)
-    print("\nCamera → Face Mapping:")
-    for cam in cameras:
-        status = "✓" if cam.get('enabled', True) else "✗"
-        if selected_manifold:
-            cam['config'] = f"config/{selected_manifold}/{os.path.basename(cam['config'])}"
-        print(f"  [{status}] USB {cam['usb_index']} → Face {cam['face']} → {cam['config']}")
-    print()
+            # Optional: if they click back from manifold to mode, we just keep waiting
+            # since selected_manifold is None. But we don't need to break the loop for that.
+            
+            dashboard.sig_manifold_selected.connect(on_manifold_selected)
+            loop.exec()
+            dashboard.sig_manifold_selected.disconnect(on_manifold_selected)
 
-    # Pass the total rules to dashboard now that we know them
-    if dashboard:
-        dashboard.progress_bar.setRange(0, total_rules)
-        dashboard.progress_bar.setFormat(f"%v / {total_rules} steps")
+            inspection_mode = getattr(dashboard, 'selected_mode', None)
+            selected_manifold = getattr(dashboard, 'selected_manifold', None)
 
-    # ── Build guided sequence based on mode ──
-    guided_sequence = []
-    if inspection_mode == "sequential":
-        available_faces = {'A', 'B', 'C', 'D', 'E', 'F'}  # All 6 faces
-        guided_sequence = engine.build_guided_sequence(available_faces)
-        engine.guided_mode = True
-        if guided_sequence:
-            engine.set_guided_step(0)
-        print(f"[Main] Guided sequence: {len(guided_sequence)} steps")
-
-    elif inspection_mode == "custom":
-        # Custom mode: populate rule selection page and wait for operator to pick a rule
-        if dashboard and qt_app:
-            dashboard.rule_page.load_rules(engine.rules)
-            print("[Main] Waiting for operator to select a rule...")
-            from PyQt6.QtCore import QEventLoop
-            rule_loop = QEventLoop()
-
-            def on_rule_selected(rule_id):
-                dashboard.selected_rule_id = rule_id
-                rule_loop.quit()
-
-            dashboard.rule_page.sig_rule_selected.connect(on_rule_selected)
-            rule_loop.exec()
-
-            selected_rule_id = dashboard.selected_rule_id
-            if not selected_rule_id:
-                print("[Main] No rule selected. Exiting.")
+            if not inspection_mode or not selected_manifold:
+                print("[Main] Operator closed window before completing setup. Exiting.")
                 return
 
-            print(f"[Main] Custom mode: selected rule '{selected_rule_id}'")
+            print(f"\n[Main] Operator Selected: Mode={inspection_mode}, Manifold={selected_manifold}")
+
+            # Map manifold to specific rule files using absolute paths
+            manifold_rules = {
+                "DALIA": os.path.join(project_root, "config", "DALIA", "connectivity_rules.json"),
+                "Manifold 2": os.path.join(project_root, "config", "DALIA", "connectivity_rules.json"),
+                "Manifold 3": os.path.join(project_root, "config", "DALIA", "connectivity_rules.json")
+            }
+            rule_file = manifold_rules.get(selected_manifold, os.path.join(project_root, "config", "DALIA", "connectivity_rules.json"))
+
+            # Initialize Engine
+            engine = LogicEngine(rule_file)
+            total_rules = len(engine.rules)
+            dashboard.progress_bar.setRange(0, total_rules)
+            dashboard.progress_bar.setFormat(f"%v / {total_rules} steps")
+
+            if inspection_mode == "sequential":
+                # Setup complete
+                break
+                
+            elif inspection_mode == "custom":
+                dashboard.rule_page.load_rules(engine.rules)
+                print("[Main] Waiting for operator to select a rule...")
+                rule_loop = QEventLoop()
+                
+                went_back = [False] # Use list to mutate inside nested function
+
+                def on_rule_selected(rule_id):
+                    dashboard.selected_rule_id = rule_id
+                    rule_loop.quit()
+
+                def on_go_back():
+                    went_back[0] = True
+                    rule_loop.quit()
+
+                dashboard.rule_page.sig_rule_selected.connect(on_rule_selected)
+                dashboard.rule_page.sig_go_back.connect(on_go_back)
+                
+                rule_loop.exec()
+                
+                dashboard.rule_page.sig_rule_selected.disconnect(on_rule_selected)
+                dashboard.rule_page.sig_go_back.disconnect(on_go_back)
+
+                if went_back[0]:
+                    print("[Main] Operator went back to Manifold selection.")
+                    continue  # Restart the outer while loop!
+                    
+                selected_rule_id = getattr(dashboard, 'selected_rule_id', None)
+                if not selected_rule_id:
+                    print("[Main] Operator closed window. Exiting.")
+                    return
+
+                print(f"[Main] Custom mode: selected rule '{selected_rule_id}'")
+                break # Setup complete
+        # ── End of Setup While Loop ──
+        
+        print(f"[Main] Logic Engine initialized with {total_rules} rules for {selected_manifold}.")
+        logger.log_system("INFO", f"Logic Engine initialized with {total_rules} rules for {selected_manifold}")
+        if inspection_mode == "custom":
             logger.log_system("INFO", f"Custom inspection: rule {selected_rule_id}")
 
             # Build a single-rule guided sequence
@@ -221,9 +224,16 @@ def main():
         if guided_sequence:
             dashboard._active_rule_id = guided_sequence[0].get('rule_id')
 
+    # Update camera configs based on Manifold (if they had specific folders, we'd inject it here)
+    print("\nCamera → Face Mapping:")
+    for cam in cameras:
+        status = "✓" if cam.get('enabled', True) else "✗"
+        if selected_manifold:
+            cam['config'] = f"config/{selected_manifold}/{os.path.basename(cam['config'])}"
+        print(f"  [{status}] USB {cam['usb_index']} → Face {cam['face']} → {cam['config']}")
+    print()
 
     # ── Start camera workers ──
-    print()
     print("Starting camera workers...")
     logger.log_system("INFO", "Starting camera workers")
 
