@@ -425,6 +425,31 @@ def main():
                     dashboard.update_result(eval_result.to_dict())
                     print(f"[Main] Manual override: {rule_id} → {result}")
                     logger.log_system("INFO", f"Manual override: {rule_id} → {result}")
+                    
+                    # Advance sequence in guided mode
+                    if engine.guided_mode and hasattr(dashboard, 'update_step_result'):
+                        step_idx = engine._guided_step_index
+                        passed = (result == "PASS")
+                        dashboard.update_step_result(step_idx, passed)
+                        
+                        # Prevent timeout from double-advancing
+                        step_timed_out[0] = True
+                        
+                        def _advance_step():
+                            next_step = engine.advance_guided_step()
+                            if next_step is not None:
+                                new_idx = engine._guided_step_index
+                                dashboard.update_guided_step(new_idx)
+                                _reset_step_timer()
+                            else:
+                                dashboard.instruction_panel.status_lbl.setText("✓  ALL STEPS COMPLETE")
+                                dashboard.instruction_panel.status_lbl.setStyleSheet(
+                                    "color: #3fb950; font-size: 24px; font-weight: bold;"
+                                )
+                                dashboard.instruction_panel.countdown_lbl.setText("")
+                                
+                        from PyQt6.QtCore import QTimer as _QTimer
+                        _QTimer.singleShot(2000, _advance_step)
 
             dashboard.sig_override.connect(handle_override)
 
