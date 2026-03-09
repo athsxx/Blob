@@ -101,7 +101,7 @@ class CameraWorker:
         self._frame_size: Optional[Tuple[int, int]] = None  # (h, w)
         
         # Display frame size (send compressed frames to reduce IPC overhead)
-        self.display_size = (480, 360)
+        self.display_size = (320, 240)
         self.last_detections = []  # Store last detections for display overlay
         
         # Health metrics
@@ -341,10 +341,9 @@ class CameraWorker:
                     if self.cap is not None and self.cap.isOpened():
                         break
 
-                # Settle delay — let AVFoundation fully establish the connection
-                # before the next camera tries to open on the same USB bus
+                # Brief settle delay before next camera opens
                 if self.cap is not None and self.cap.isOpened():
-                    time.sleep(1.0)
+                    time.sleep(0.3)
             finally:
                 if self.open_semaphore is not None:
                     self.open_semaphore.release()
@@ -590,8 +589,13 @@ class CameraWorker:
                     try:
                         # Draw overlays using the most recent detections
                         display_frame = self.draw_overlays(frame, self.last_detections)
-                        # Send compressed frame to reduce IPC overhead
-                        small = cv2.resize(display_frame, self.display_size)
+                        # Only resize if frame is larger than display_size
+                        fh, fw = display_frame.shape[:2]
+                        dw, dh = self.display_size
+                        if fw != dw or fh != dh:
+                            small = cv2.resize(display_frame, self.display_size)
+                        else:
+                            small = display_frame
                         self.display_queue.put_nowait((f"CAM_{self.face}", small))
                         self.last_display_time = now
                     except:

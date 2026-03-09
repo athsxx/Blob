@@ -708,8 +708,7 @@ class ManifoldSelectionPage(QWidget):
         body_layout.addWidget(self.btn_start)
 
         info_lbl = QLabel(
-            "Active Cameras: Face A · Face B · Face C · Face D · Face E   |   "
-            "Face F: Not Available (POC)"
+            "Active Cameras: Face A · Face B · Face C · Face D · Face E · Face F"
         )
         info_lbl.setStyleSheet("color: #484f58; font-size: 13px; background-color: transparent;")
         info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -806,7 +805,7 @@ class ModeSelectionPage(QWidget):
         btn_row.addLayout(cust_col)
         body_layout.addLayout(btn_row)
 
-        info_lbl = QLabel("Active Cameras: Face A · Face B · Face C · Face D · Face E   |   Face F: Not Available (POC)")
+        info_lbl = QLabel("Active Cameras: Face A · Face B · Face C · Face D · Face E · Face F")
         info_lbl.setStyleSheet("color: #484f58; font-size: 13px; background-color: transparent;")
         info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         body_layout.addWidget(info_lbl)

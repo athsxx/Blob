@@ -156,7 +156,7 @@ def main():
     # ── Build guided sequence (Sequential mode) ──
     guided_sequence = []
     if inspection_mode == "sequential":
-        available_faces = {'A', 'B', 'C', 'D', 'E'}  # Face F excluded (no camera)
+        available_faces = {'A', 'B', 'C', 'D', 'E', 'F'}  # All 6 faces
         guided_sequence = engine.build_guided_sequence(available_faces)
         engine.guided_mode = True
         if guided_sequence:
@@ -206,7 +206,7 @@ def main():
             "warmup_reads": 3,
             "robust_mode": True,
             "max_read_retries": 10,
-            "target_fps": 15,
+            "target_fps": 30,
             "reject_high_res": False,
             "reject_high_fps": False,
         }
@@ -216,8 +216,8 @@ def main():
         hub_id = cam.get("hub", 0)
         open_semaphore = global_open_semaphore
 
-        # Stagger between camera opens — AVFoundation needs time to settle
-        time.sleep(2.5)
+        # Brief stagger between camera opens
+        time.sleep(0.5)
         
         if qt_app:
             qt_app.processEvents() # Keep UI responsive while loading hardware

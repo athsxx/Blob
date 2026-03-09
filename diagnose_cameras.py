@@ -7,7 +7,9 @@ Checks all USB indices to find available cameras and their capabilities.
 import cv2
 import sys
 
-def check_camera(index, backend=cv2.CAP_AVFOUNDATION):
+def check_camera(index, backend=None):
+    if backend is None:
+        backend = cv2.CAP_DSHOW if sys.platform == "win32" else (cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY)
     """Check if a camera is available at the given index."""
     cap = cv2.VideoCapture(index, backend)
     if not cap.isOpened():
