@@ -641,6 +641,7 @@ class OverrideDialog(QDialog):
 class ManifoldSelectionPage(QWidget):
     """Initial landing page to select the manifold model."""
     sig_manifold_selected = pyqtSignal(str)
+    sig_go_back = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -702,6 +703,18 @@ class ManifoldSelectionPage(QWidget):
         """)
         self.btn_start.clicked.connect(lambda: self.sig_manifold_selected.emit(self.combo_manifold.currentText()))
         body_layout.addWidget(self.btn_start)
+
+        self.btn_back = QPushButton("←  BACK TO MODE SELECTION")
+        self.btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_back.setStyleSheet("""
+            QPushButton {
+                background-color: transparent; color: #8b949e; font-weight: bold;
+                font-size: 14px; padding: 10px 20px; border: 1px solid #30363d; border-radius: 6px;
+            }
+            QPushButton:hover { background-color: #21262d; color: #c9d1d9; }
+        """)
+        self.btn_back.clicked.connect(self.sig_go_back.emit)
+        body_layout.addWidget(self.btn_back, alignment=Qt.AlignmentFlag.AlignCenter)
 
         info_lbl = QLabel(
             "Active Cameras: Face A · Face B · Face C · Face D · Face E · Face F"
@@ -816,6 +829,7 @@ class ModeSelectionPage(QWidget):
 class RuleSelectionPage(QWidget):
     """Page shown in Custom mode to pick a single rule to inspect."""
     sig_rule_selected = pyqtSignal(str)
+    sig_go_back = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -891,6 +905,18 @@ class RuleSelectionPage(QWidget):
             lambda: self.sig_rule_selected.emit(self.rule_combo.currentText())
         )
         body_layout.addWidget(self.btn_start, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.btn_back = QPushButton("←  BACK TO MANIFOLD SELECTION")
+        self.btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_back.setStyleSheet("""
+            QPushButton {
+                background-color: transparent; color: #8b949e; font-weight: bold;
+                font-size: 14px; padding: 10px 20px; border: 1px solid #30363d; border-radius: 6px;
+            }
+            QPushButton:hover { background-color: #21262d; color: #c9d1d9; }
+        """)
+        self.btn_back.clicked.connect(self.sig_go_back.emit)
+        body_layout.addWidget(self.btn_back, alignment=Qt.AlignmentFlag.AlignCenter)
 
         layout.addWidget(body, stretch=1)
 
@@ -1020,6 +1046,7 @@ class DashboardWindow(QMainWindow):
         # Stack 1: Manifold Selection (Second page)
         self.manifold_page = ManifoldSelectionPage()
         self.manifold_page.sig_manifold_selected.connect(self._on_manifold_selected)
+        self.manifold_page.sig_go_back.connect(self._on_back_to_mode)
         self.stacked_widget.addWidget(self.manifold_page)
 
         # Stack 2: Live Dashboard
@@ -1029,6 +1056,7 @@ class DashboardWindow(QMainWindow):
         # Stack 3: Rule Selection (Custom mode only)
         self.rule_page = RuleSelectionPage()
         self.rule_page.sig_rule_selected.connect(self._on_rule_selected)
+        self.rule_page.sig_go_back.connect(self._on_back_to_manifold)
         self.stacked_widget.addWidget(self.rule_page)
 
         root = QVBoxLayout(self.dashboard_page)
@@ -1156,11 +1184,23 @@ class DashboardWindow(QMainWindow):
         self.selected_mode = mode
         self.stacked_widget.setCurrentIndex(1)
 
+    def _on_back_to_mode(self):
+        self.selected_mode = None
+        self.stacked_widget.setCurrentIndex(0)
+
+    def _on_back_to_manifold(self):
+        self.selected_manifold = None
+        self.stacked_widget.setCurrentIndex(1)
+
     def _on_manifold_selected(self, manifold: str):
         self.selected_manifold = manifold
         if self.selected_mode == "custom":
             # Custom mode: go to rule selection page first
             self.stacked_widget.setCurrentIndex(3)
+            # Emit signal so main.py unblocks and loads the engine rules
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+            self.sig_manifold_selected.emit(manifold)
         else:
             # Sequential mode: go straight to dashboard
             self.stacked_widget.setCurrentIndex(2)
