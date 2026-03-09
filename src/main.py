@@ -124,14 +124,14 @@ def main():
     # ── Dynamic Configuration Loading ──
     print(f"\n[Main] Operator Selected: Mode={inspection_mode}, Manifold={selected_manifold}")
     
-    # Map manifold to specific rule files
+    # Map manifold to specific rule files using absolute paths
     manifold_rules = {
-        "DALIA": "config/DALIA/connectivity_rules.json",
-        "Manifold 2": "config/DALIA/connectivity_rules.json", # Default fallback for POC
-        "Manifold 3": "config/DALIA/connectivity_rules.json"  # Default fallback for POC
+        "DALIA": os.path.join(project_root, "config", "DALIA", "connectivity_rules.json"),
+        "Manifold 2": os.path.join(project_root, "config", "DALIA", "connectivity_rules.json"), # Default fallback for POC
+        "Manifold 3": os.path.join(project_root, "config", "DALIA", "connectivity_rules.json")  # Default fallback for POC
     }
     
-    rule_file = manifold_rules.get(selected_manifold, "config/DALIA/connectivity_rules.json")
+    rule_file = manifold_rules.get(selected_manifold, os.path.join(project_root, "config", "DALIA", "connectivity_rules.json"))
     
     # Initialize Logic Engine dynamically
     engine = LogicEngine(rule_file)
