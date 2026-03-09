@@ -186,7 +186,18 @@ def main():
         
         print(f"[Main] Logic Engine initialized with {total_rules} rules for {selected_manifold}.")
         logger.log_system("INFO", f"Logic Engine initialized with {total_rules} rules for {selected_manifold}")
-        if inspection_mode == "custom":
+        
+        # ── Build guided sequence based on mode ──
+        guided_sequence = []
+        if inspection_mode == "sequential":
+            available_faces = {'A', 'B', 'C', 'D', 'E', 'F'}  # All 6 faces
+            guided_sequence = engine.build_guided_sequence(available_faces)
+            engine.guided_mode = True
+            if guided_sequence:
+                engine.set_guided_step(0)
+            print(f"[Main] Guided sequence: {len(guided_sequence)} steps")
+            
+        elif inspection_mode == "custom":
             logger.log_system("INFO", f"Custom inspection: rule {selected_rule_id}")
 
             # Build a single-rule guided sequence
