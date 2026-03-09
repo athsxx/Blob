@@ -126,6 +126,21 @@ class CameraWorker:
             raw_circles = data.get('circles', [])
             self.rois = []
             
+            # Auto-scale ROIs if capture resolution differs from calibration resolution
+            cal_res = data.get('calibration_resolution', [640, 480])
+            cap_w = int(self.capture_settings.get('width', 640))
+            cap_h = int(self.capture_settings.get('height', 480))
+            # Use the first preset's resolution if presets exist
+            presets = self.capture_settings.get('presets')
+            if presets:
+                cap_w = int(presets[0].get('width', cap_w))
+                cap_h = int(presets[0].get('height', cap_h))
+            sx = cap_w / cal_res[0]
+            sy = cap_h / cal_res[1]
+            needs_scale = abs(sx - 1.0) > 0.01 or abs(sy - 1.0) > 0.01
+            if needs_scale:
+                print(f"[CAM_{self.face}] Scaling ROIs: calibrated={cal_res[0]}x{cal_res[1]} → capture={cap_w}x{cap_h} (sx={sx:.2f}, sy={sy:.2f})")
+            
             for i, c in enumerate(raw_circles):
                 if isinstance(c, list):
                     # Old format: [cx, cy, r]
@@ -141,6 +156,14 @@ class CameraWorker:
                     angle = c.get('angle', 0)
                 else:
                     continue
+                
+                # Apply scale factors if resolution changed
+                if needs_scale:
+                    cx = int(cx * sx)
+                    cy = int(cy * sy)
+                    r = max(1, int(r * min(sx, sy)))
+                    w = max(1, int(w * sx))
+                    h = max(1, int(h * sy))
                 
                 self.rois.append({
                     'roi_id': f"{self.face}_{name}",

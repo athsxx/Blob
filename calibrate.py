@@ -90,7 +90,7 @@ class Calibrator:
 
     def save_config(self):
         """Save ROIs in circles format with ellipse data:
-        {"circles": [{"name": "H1", "coords": [cx, cy, r], "w": w, "h": h, "angle": a}]}
+        {"circles": [...], "calibration_resolution": [640, 480]}
         Compatible with camera_worker.py — uses w/h/angle for ellipses, falls back to radius for circles."""
         circles = []
         for e in self.ellipses:
@@ -104,7 +104,7 @@ class Calibrator:
             }
             circles.append(entry)
         with open(CONFIG_PATH, 'w') as f:
-            json.dump({"circles": circles}, f, indent=2)
+            json.dump({"circles": circles, "calibration_resolution": [640, 480]}, f, indent=2)
         print(f"[SUCCESS] Saved {len(circles)} ROIs to {CONFIG_PATH}")
 
     def get_ellipse_at(self, x, y):

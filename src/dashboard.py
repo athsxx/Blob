@@ -218,7 +218,7 @@ class CameraWidget(QFrame):
         fh, fw = rgb.shape[:2]
         qimg = QImage(rgb.data, fw, fh, 3 * fw, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(qimg)
-        scaled = pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio,
+        scaled = pixmap.scaled(w, h, Qt.AspectRatioMode.IgnoreAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
         self.feed_label.setPixmap(scaled)
         self.feed_label.setStyleSheet("background-color: #0d1117; border-radius: 5px;")
