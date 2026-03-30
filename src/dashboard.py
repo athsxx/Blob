@@ -1,6 +1,12 @@
 """
 Operator Dashboard — PyQt6  (Guided Inspection Mode)
 
+Stacked pages (QStackedWidget indices):
+  0 — Mode: Sequential vs Manual inspection
+  1 — Manifold: DALIA / Manifold 2 / Manifold 3
+  2 — Manual setup only: dropdowns for manifold, input face, rule (then Continue)
+  3 — Live dashboard (cameras, steps, START/STOP, etc.)
+
 3-column layout:
   ┌──────────────────────────────────────────────────────────────┐
   │  ⬡ MANIFOLD INSPECTION SYSTEM          ● STOPPED   17:00:00 │
@@ -18,18 +24,27 @@ Operator Dashboard — PyQt6  (Guided Inspection Mode)
   └──────────────────────────────────────────────────────────────┘
 """
 
+import json
+import os
+import subprocess
 import sys
 import time
 import numpy as np
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Set
+
+from logic_engine import rule_has_unavailable_output
+
+# Faces with cameras in POC (matches main.py sequential guided filter)
+MANUAL_AVAILABLE_FACES: Set[str] = {"A", "B", "C", "D", "E"}
 
 try:
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout,
         QHBoxLayout, QGridLayout, QFrame, QProgressBar, QScrollArea,
         QSizePolicy, QPushButton, QDialog, QComboBox, QRadioButton,
-        QButtonGroup, QDialogButtonBox, QStackedWidget
+        QButtonGroup, QDialogButtonBox, QStackedWidget, QSpinBox,
+        QCheckBox, QMessageBox, QFormLayout,
     )
     from PyQt6.QtCore import Qt, QTimer, pyqtSignal
     from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QPalette
@@ -37,6 +52,16 @@ try:
 except ImportError:
     HAS_PYQT6 = False
     print("[Dashboard] PyQt6 not installed. Install with: pip install PyQt6")
+
+if HAS_PYQT6:
+    try:
+        from camera_setup_ui import CameraSetupDialog, CalibrateRoiDialog
+    except ImportError:
+        CameraSetupDialog = None  # type: ignore
+        CalibrateRoiDialog = None  # type: ignore
+else:
+    CameraSetupDialog = None  # type: ignore
+    CalibrateRoiDialog = None  # type: ignore
 
 
 # ──────────────────────────────────────────────
@@ -109,8 +134,21 @@ QPushButton#btnOverride:disabled { background-color: #21262d; color: #484f58; }
 QFrame#cameraCell {
     background-color: #161b22;
     border: 1px solid #30363d;
-    border-radius: 5px;
+    border-radius: 8px;
 }
+
+QFrame#cameraVideoShell {
+    background-color: #010409;
+    border: 1px solid #21262d;
+    border-radius: 6px;
+}
+
+QPushButton#btnSetup {
+    background-color: #21262d; color: #e6edf3; font-weight: bold;
+    font-size: 12px; padding: 5px 12px; border: 1px solid #30363d; border-radius: 4px;
+}
+QPushButton#btnSetup:hover { background-color: #30363d; }
+QPushButton#btnSetup:disabled { background-color: #161b22; color: #484f58; border-color: #21262d; }
 
 /* Step list */
 QFrame#stepListPanel {
@@ -178,19 +216,30 @@ class CameraWidget(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
 
         self.feed_label = QLabel()
         self.feed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.feed_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        label_text = f"Index {usb_index} | Face {face}" if usb_index is not None else f"Face {face}"
+        self.feed_label.setMinimumSize(120, 90)
+        label_text = f"USB {usb_index} · Face {face}" if usb_index is not None else f"Face {face}"
         self.feed_label.setText(f"{label_text}\nNO SIGNAL")
         self.feed_label.setStyleSheet(
-            "background-color: #0d1117; border-radius: 5px; "
+            "background-color: #010409; border-radius: 4px; "
             "color: #484f58; font-size: 12px; font-weight: bold;"
         )
-        layout.addWidget(self.feed_label)
+        self.feed_label.setToolTip(
+            "Scaled preview only. Laser ROIs are saved in full camera resolution and are not affected by this display size."
+        )
+
+        video_shell = QFrame()
+        video_shell.setObjectName("cameraVideoShell")
+        shell_layout = QVBoxLayout(video_shell)
+        shell_layout.setContentsMargins(4, 4, 4, 4)
+        shell_layout.setSpacing(0)
+        shell_layout.addWidget(self.feed_label, stretch=1)
+        layout.addWidget(video_shell, stretch=1)
 
         # Overlays
         self._face_lbl = QLabel(label_text, self)
@@ -221,7 +270,9 @@ class CameraWidget(QFrame):
         scaled = pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
         self.feed_label.setPixmap(scaled)
-        self.feed_label.setStyleSheet("background-color: #0d1117; border-radius: 5px;")
+        self.feed_label.setStyleSheet(
+            "background-color: #010409; border-radius: 4px;"
+        )
 
     def update_stats(self, fps: float, det_count: int):
         self._fps_lbl.setText(f"{fps:.1f} fps")
@@ -642,6 +693,166 @@ class OverrideDialog(QDialog):
 # Selection Pages
 # ──────────────────────────────────────────────
 
+# Must match main.py manifold_rules paths (relative to project root)
+MANIFOLD_RULES_REL: Dict[str, str] = {
+    "DALIA": "config/DALIA/connectivity_rules.json",
+    "Manifold 2": "config/DALIA/connectivity_rules.json",
+    "Manifold 3": "config/DALIA/connectivity_rules.json",
+}
+
+
+class ManualInspectionSetupPage(QWidget):
+    """
+    Custom / manual mode: pick manifold (again or change), input face, and rule from dropdowns.
+    """
+    sig_continue = pyqtSignal()
+    sig_back = pyqtSignal()
+
+    def __init__(self, project_root: str, parent=None):
+        super().__init__(parent)
+        self._project_root = project_root
+        self._rules_raw: List[Dict[str, Any]] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QFrame()
+        header.setStyleSheet("background-color: #161b22;")
+        header.setFixedHeight(100)
+        hl = QVBoxLayout(header)
+        hl.setContentsMargins(40, 24, 40, 16)
+        title = QLabel("Manual inspection setup")
+        title.setStyleSheet(
+            "color: #f0f6fc; font-size: 22px; font-weight: bold; background: transparent;"
+        )
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub = QLabel("Choose manifold, face, and the connection rule to test")
+        sub.setStyleSheet("color: #8b949e; font-size: 13px; background: transparent;")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hl.addWidget(title)
+        hl.addWidget(sub)
+        layout.addWidget(header)
+
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bl.setSpacing(20)
+        bl.setContentsMargins(48, 32, 48, 32)
+
+        form = QFormLayout()
+        form.setSpacing(14)
+        form.setHorizontalSpacing(16)
+
+        self.combo_manifold = QComboBox()
+        self.combo_manifold.addItems(list(MANIFOLD_RULES_REL.keys()))
+        self.combo_manifold.setMinimumWidth(320)
+        self.combo_manifold.setStyleSheet(
+            "font-size: 15px; padding: 8px 12px; background: #21262d; color: #e6edf3; "
+            "border: 1px solid #30363d; border-radius: 6px;"
+        )
+        self.combo_manifold.currentTextChanged.connect(self._on_manifold_changed)
+
+        self.combo_face = QComboBox()
+        self.combo_face.setMinimumWidth(320)
+        self.combo_face.setStyleSheet(self.combo_manifold.styleSheet())
+        for f in "ABCDEF":
+            self.combo_face.addItem(f"Face {f}", userData=f)
+        self.combo_face.currentIndexChanged.connect(self._refill_rules_combo)
+
+        self.combo_rule = QComboBox()
+        self.combo_rule.setMinimumWidth(480)
+        self.combo_rule.setStyleSheet(self.combo_manifold.styleSheet())
+
+        form.addRow(QLabel("Manifold"), self.combo_manifold)
+        form.addRow(QLabel("Input face"), self.combo_face)
+        form.addRow(QLabel("Rule (laser input)"), self.combo_rule)
+
+        hint = QLabel(
+            "Rules are filtered by the selected input face. "
+            "Some rules are hidden if a required output face has no camera (same as sequential mode)."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #6e7681; font-size: 12px; max-width: 520px;")
+        bl.addLayout(form)
+        bl.addWidget(hint)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(16)
+        btn_back = QPushButton("← Back")
+        btn_back.setObjectName("btnSetup")
+        btn_back.clicked.connect(self.sig_back.emit)
+        btn_go = QPushButton("Continue to live view")
+        btn_go.setObjectName("btnStart")
+        btn_go.clicked.connect(self._emit_continue_if_ok)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_back)
+        btn_row.addWidget(btn_go)
+        bl.addLayout(btn_row)
+
+        layout.addWidget(body, stretch=1)
+
+    def set_initial_manifold(self, name: str):
+        idx = self.combo_manifold.findText(name)
+        if idx >= 0:
+            self.combo_manifold.setCurrentIndex(idx)
+
+    def _rules_path(self) -> str:
+        rel = MANIFOLD_RULES_REL.get(self.combo_manifold.currentText(), MANIFOLD_RULES_REL["DALIA"])
+        return os.path.normpath(os.path.join(self._project_root, rel))
+
+    def _load_rules_file(self) -> bool:
+        path = self._rules_path()
+        self._rules_raw = []
+        if not os.path.isfile(path):
+            return False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._rules_raw = data.get("rules", [])
+        except (json.JSONDecodeError, OSError):
+            self._rules_raw = []
+        return bool(self._rules_raw)
+
+    def _on_manifold_changed(self, _txt: str):
+        self._load_rules_file()
+        self._refill_rules_combo()
+
+    def _refill_rules_combo(self):
+        self.combo_rule.clear()
+        face = self.combo_face.currentData()
+        if not face:
+            return
+        for rule in self._rules_raw:
+            inp = rule.get("input") or {}
+            if inp.get("face") != face:
+                continue
+            if rule_has_unavailable_output(rule, MANUAL_AVAILABLE_FACES):
+                continue
+            rid = rule.get("rule_id", "")
+            hid = inp.get("hole_id", "")
+            self.combo_rule.addItem(f"{rid}  —  hole {hid}", userData=rid)
+        if self.combo_rule.count() == 0:
+            self.combo_rule.addItem("(no rules for this face)", userData=None)
+
+    def reload_from_disk(self):
+        self._load_rules_file()
+        self._refill_rules_combo()
+
+    def _emit_continue_if_ok(self):
+        rid = self.combo_rule.currentData()
+        if not rid:
+            QMessageBox.warning(self, "Manual setup", "Select a rule.")
+            return
+        self.sig_continue.emit()
+
+    def get_manifold(self) -> str:
+        return self.combo_manifold.currentText()
+
+    def get_rule_id(self) -> Optional[str]:
+        return self.combo_rule.currentData()
+
+
 class ManifoldSelectionPage(QWidget):
     """Initial landing page to select the manifold model."""
     sig_manifold_selected = pyqtSignal(str)
@@ -692,6 +903,14 @@ class ManifoldSelectionPage(QWidget):
             }
         """)
         body_layout.addWidget(self.combo_manifold)
+
+        poc_note = QLabel(
+            "Manifold 2 and 3 currently use the same rules and config as DALIA (POC)."
+        )
+        poc_note.setWordWrap(True)
+        poc_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        poc_note.setStyleSheet("color: #6e7681; font-size: 12px; background-color: transparent; max-width: 420px;")
+        body_layout.addWidget(poc_note)
 
         # Start Inspection Button
         self.btn_start = QPushButton("▶  START INSPECTION")
@@ -785,18 +1004,23 @@ class ModeSelectionPage(QWidget):
         cust_col.setSpacing(16)
         cust_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.btn_custom = QPushButton("⚙  Custom Inspection")
-        self.btn_custom.setEnabled(False)
+        self.btn_custom = QPushButton("⚙  Manual inspection")
+        self.btn_custom.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_custom.setStyleSheet("""
             QPushButton {
-                background-color: #21262d; color: #484f58; font-weight: bold;
-                font-size: 20px; padding: 25px 50px; border: 2px solid #30363d; border-radius: 8px;
+                background-color: #1f6feb; color: #ffffff; font-weight: bold;
+                font-size: 20px; padding: 25px 50px; border: none; border-radius: 8px;
                 min-width: 300px; min-height: 100px;
             }
+            QPushButton:hover { background-color: #388bfd; }
         """)
+        self.btn_custom.clicked.connect(lambda: self.sig_mode_selected.emit("custom"))
 
-        cust_desc = QLabel("Define your own inspection order.\nSelect specific holes and rules\nto test manually.\n\n[ Coming Soon ]")
-        cust_desc.setStyleSheet("color: #3d444d; font-size: 14px; background-color: transparent; line-height: 1.5;")
+        cust_desc = QLabel(
+            "Pick manifold, face, and one connection rule.\n"
+            "Then run a single guided check (same laser flow as sequential)."
+        )
+        cust_desc.setStyleSheet("color: #8b949e; font-size: 14px; background-color: transparent; line-height: 1.5;")
         cust_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         cust_col.addWidget(self.btn_custom)
@@ -810,8 +1034,6 @@ class ModeSelectionPage(QWidget):
         info_lbl.setStyleSheet("color: #484f58; font-size: 13px; background-color: transparent;")
         info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         body_layout.addWidget(info_lbl)
-
-        layout.addWidget(body, stretch=1)
 
         layout.addWidget(body, stretch=1)
 
@@ -832,12 +1054,20 @@ class DashboardWindow(QMainWindow):
     sig_manifold_selected = pyqtSignal(str)
 
     def __init__(self, total_rules: int = 0,
-                 cameras: Optional[List[Dict[str, Any]]] = None):
+                 cameras: Optional[List[Dict[str, Any]]] = None,
+                 config_dir: Optional[str] = None,
+                 project_root: Optional[str] = None,
+                 cameras_file: Optional[str] = None):
         super().__init__()
         self.setWindowTitle("Manifold Inspection System")
         self.setMinimumSize(1200, 720)
         self.resize(1440, 860)
         self.setStyleSheet(DARK_STYLESHEET)
+
+        self.config_dir = config_dir or ""
+        self.project_root = project_root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.cameras_file = cameras_file or ""
+        self._cameras_list: List[Dict[str, Any]] = list(cameras) if cameras else []
 
         # Face → USB index mapping
         self._face_to_index: Dict[str, int] = {}
@@ -863,6 +1093,7 @@ class DashboardWindow(QMainWindow):
 
         self.selected_manifold = None
         self.selected_mode = None
+        self.custom_rule_id: Optional[str] = None
 
         # ── Central Widget & Global Layout ──
         central = QWidget()
@@ -913,7 +1144,13 @@ class DashboardWindow(QMainWindow):
         self.manifold_page.sig_manifold_selected.connect(self._on_manifold_selected)
         self.stacked_widget.addWidget(self.manifold_page)
 
-        # Stack 2: Live Dashboard
+        # Stack 2: Manual mode — manifold / face / rule dropdowns
+        self.manual_setup_page = ManualInspectionSetupPage(self.project_root, self)
+        self.manual_setup_page.sig_continue.connect(self._on_manual_setup_continue)
+        self.manual_setup_page.sig_back.connect(self._on_manual_setup_back)
+        self.stacked_widget.addWidget(self.manual_setup_page)
+
+        # Stack 3: Live Dashboard
         self.dashboard_page = QWidget()
         self.stacked_widget.addWidget(self.dashboard_page)
 
@@ -939,6 +1176,13 @@ class DashboardWindow(QMainWindow):
         cl.addSpacing(12)
         self.btn_override = self._make_btn("✎  OVERRIDE", "btnOverride", self._on_override, enabled=False)
         cl.addWidget(self.btn_override)
+
+        cl.addSpacing(8)
+        self.btn_usb_map = self._make_btn("USB map", "btnSetup", self._on_usb_map, enabled=bool(self.cameras_file))
+        self.btn_calibrate = self._make_btn("Calibrate ROIs", "btnSetup", self._on_calibrate_rois, enabled=True)
+        cl.addWidget(self.btn_usb_map)
+        cl.addWidget(self.btn_calibrate)
+
         cl.addStretch()
 
         self.state_lbl = QLabel("STOPPED")
@@ -1044,13 +1288,35 @@ class DashboardWindow(QMainWindow):
 
     def _on_manifold_selected(self, manifold: str):
         self.selected_manifold = manifold
-        self.stacked_widget.setCurrentIndex(2)
+        if self.selected_mode == "custom":
+            self.custom_rule_id = None
+            self.manual_setup_page.set_initial_manifold(manifold)
+            self.manual_setup_page.reload_from_disk()
+            self.stacked_widget.setCurrentIndex(2)
+        else:
+            self.custom_rule_id = None
+            self._enter_live_dashboard(manifold)
+
+    def _on_manual_setup_back(self):
+        self.stacked_widget.setCurrentIndex(1)
+
+    def _on_manual_setup_continue(self):
+        rid = self.manual_setup_page.get_rule_id()
+        if not rid:
+            return
+        self.custom_rule_id = rid
+        self.selected_manifold = self.manual_setup_page.get_manifold()
+        self._enter_live_dashboard(self.selected_manifold)
+
+    def _enter_live_dashboard(self, manifold: str):
+        self.selected_manifold = manifold
+        self.stacked_widget.setCurrentIndex(3)
         self.global_header.show()
         self.header_status.show()
         self.clock_lbl.show()
         from PyQt6.QtWidgets import QApplication
-        QApplication.processEvents() # Force Qt to paint the dashboard before main.py sleeps
-        self.sig_manifold_selected.emit(manifold) # Signal main.py that UI setup is complete
+        QApplication.processEvents()  # Paint dashboard before main.py continues
+        self.sig_manifold_selected.emit(manifold)
 
     # ── Helpers ─────────────────────────────────
 
@@ -1258,6 +1524,27 @@ class DashboardWindow(QMainWindow):
             rule_id, result = dlg.get_selection()
             self.sig_override.emit(rule_id, result)
 
+    def _on_usb_map(self):
+        if not HAS_PYQT6 or CameraSetupDialog is None or not self.cameras_file:
+            return
+        dlg = CameraSetupDialog(self.cameras_file, DARK_STYLESHEET, self)
+        dlg.exec()
+
+    def _on_calibrate_rois(self):
+        if not HAS_PYQT6 or CalibrateRoiDialog is None:
+            return
+        manifold = self.selected_manifold or "DALIA"
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        dlg = CalibrateRoiDialog(
+            self._cameras_list,
+            manifold,
+            cdir,
+            self.project_root,
+            DARK_STYLESHEET,
+            self,
+        )
+        dlg.exec()
+
 
 # ──────────────────────────────────────────────
 # OpenCV fallback (headless / no PyQt6)
@@ -1323,7 +1610,10 @@ class OpenCVDashboard:
 
 def create_dashboard(total_rules: int = 0,
                      force_cv: bool = False,
-                     cameras=None):
+                     cameras=None,
+                     config_dir: Optional[str] = None,
+                     project_root: Optional[str] = None,
+                     cameras_file: Optional[str] = None):
     """
     Returns (dashboard, qt_app_or_None).
     If PyQt6 is available and force_cv is False, returns a DashboardWindow.
@@ -1332,7 +1622,13 @@ def create_dashboard(total_rules: int = 0,
     if HAS_PYQT6 and not force_cv:
         app = QApplication.instance() or QApplication(sys.argv)
         app.setStyleSheet(DARK_STYLESHEET)
-        win = DashboardWindow(total_rules=total_rules, cameras=cameras)
+        win = DashboardWindow(
+            total_rules=total_rules,
+            cameras=cameras,
+            config_dir=config_dir,
+            project_root=project_root,
+            cameras_file=cameras_file,
+        )
         win.show()
         return win, app
     else:
