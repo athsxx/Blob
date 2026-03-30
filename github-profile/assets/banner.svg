@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="850" height="240" viewBox="0 0 850 240" role="img" aria-label="Atharv Jaju - athsxx">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -16,7 +17,7 @@
   </defs>
   <rect width="850" height="240" rx="14" fill="url(#bg)"/>
   <rect x="2" y="2" width="846" height="236" rx="12" fill="none" stroke="#30363d" stroke-width="1"/>
-  <text x="48" y="72" fill="#8b949e" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" letter-spacing="0.2em">HELLO, I&apos;M</text>
+  <text x="48" y="72" fill="#8b949e" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" letter-spacing="0.2em">HELLO, I AM</text>
   <text x="48" y="132" fill="#f0f6fc" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="52" font-weight="700" letter-spacing="-1.5">Atharv Jaju</text>
   <text x="48" y="172" fill="#58a6ff" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="16" font-weight="500">@athsxx</text>
   <text x="48" y="204" fill="#6e7681" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="500" letter-spacing="0.08em">PYTHON  |  COMPUTER VISION  |  APPLIED ML  |  PRODUCT</text>
