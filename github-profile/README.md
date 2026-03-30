@@ -1,13 +1,16 @@
 <div align="center">
 
-<img src="assets/banner.svg" alt="Atharv Jaju — @athsxx" width="850" />
-
 ### Atharv Jaju · `@athsxx`
 
 **Python-focused builder** — computer vision, applied ML, and tools people actually use in production and at hackathons.
 
 [![GitHub followers](https://img.shields.io/github/followers/athsxx?style=social&label=Follow)](https://github.com/athsxx?tab=followers)
 [![GitHub User's stars](https://img.shields.io/github/stars/athsxx?style=social&label=Stars)](https://github.com/athsxx?tab=repositories&q=&type=source&sort=stargazers)
+
+<br />
+
+<!-- Banner: requires assets/banner.svg on your default branch. If this image is broken, push the whole github-profile folder including assets/. -->
+<img src="https://raw.githubusercontent.com/athsxx/athsxx/main/assets/banner.svg" alt="Atharv Jaju - athsxx" width="850" />
 
 </div>
 
@@ -41,14 +44,17 @@
 
 <div align="center">
 
-<img height="165" src="https://github-readme-stats.vercel.app/api?username=athsxx&show_icons=true&theme=tokyonight&hide_border=true&rank_icon=percentile&include_all_commits=true" alt="GitHub stats" />
-<img height="165" src="https://github-readme-stats.vercel.app/api/top-langs/?username=athsxx&layout=compact&theme=tokyonight&hide_border=true&langs_count=8" alt="Top languages" />
+<a href="https://github.com/athsxx">
+  <img src="https://ghchart.rshah.org/21262d/athsxx" alt="Contribution chart" width="800" />
+</a>
 
-<br />
+<br /><br />
 
 <img src="https://streak-stats.demolab.com/?user=athsxx&theme=tokyonight&hide_border=true" alt="GitHub streak" />
 
 </div>
+
+<sub>Stats cards from third-party APIs sometimes fail to load; this section uses a contribution chart + streak instead. For classic stat cards, see [github-readme-stats](https://github.com/anuraghazra/github-readme-stats) (self-host if Vercel is rate-limited).</sub>
 
 ---
 

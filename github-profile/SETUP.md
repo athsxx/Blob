@@ -29,6 +29,15 @@ If `origin` already exists, use `git remote set-url origin https://github.com/at
 - **Profile**: **pin** up to six repositories.  
 - Edit **`README.md`** here to add LinkedIn / email badges (see HTML comment at bottom of README).
 
-## If stats cards are blank
+## If the banner image is broken
 
-[github-readme-stats](https://github.com/anuraghazra/github-readme-stats) and [streak-stats](https://github.com/DenverCoder1/github-readme-streak-stats) can rate-limit; refresh later or remove those `<img>` blocks temporarily.
+The README loads the banner from:
+
+`https://raw.githubusercontent.com/athsxx/athsxx/main/assets/banner.svg`
+
+- Push the **`assets/`** folder (including `banner.svg`) to **`athsxx/athsxx`** on branch **`main`**.  
+- If your default branch is **`master`**, edit `README.md` and change `main` → `master` in that URL.
+
+## If activity images are blank
+
+The contribution chart uses [ghchart.rshah.org](https://ghchart.rshah.org); streak uses [streak-stats.demolab.com](https://github.com/DenverCoder1/github-readme-streak-stats). Refresh later if a host is slow. Optional: add [github-readme-stats](https://github.com/anuraghazra/github-readme-stats) via a self-hosted Vercel deploy if you want classic stat cards without rate limits.
