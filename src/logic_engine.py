@@ -26,6 +26,23 @@ VALID_FACES = frozenset("ABCDEF")
 DEFAULT_STABLE_WINDOW_S = 2.0
 
 
+def rule_has_unavailable_output(rule: Dict, available_faces: Set[str]) -> bool:
+    """
+    True if the rule has a mandatory expected output whose candidate faces are
+    all absent from available_faces (same filter as guided sequence building).
+    """
+    for output in rule.get("expected_outputs", []):
+        if not output.get("mandatory", True):
+            continue
+        out_face = output.get("face", "")
+        candidate_faces = parse_face_to_faces(out_face)
+        if not candidate_faces:
+            continue
+        if all(f not in available_faces for f in candidate_faces):
+            return True
+    return False
+
+
 def parse_face_to_faces(face: str) -> List[str]:
     """
     Parse a face specifier into a list of single-face letters.
@@ -698,20 +715,6 @@ class LogicEngine:
 
         face_order = ['A', 'B', 'C', 'D', 'E', 'F']
 
-        def _rule_has_unavailable_output(rule: Dict) -> bool:
-            """True if rule has a mandatory output on a face with no camera."""
-            for output in rule.get('expected_outputs', []):
-                if not output.get('mandatory', True):
-                    continue
-                out_face = output.get('face', '')
-                candidate_faces = parse_face_to_faces(out_face)
-                if not candidate_faces:
-                    continue
-                # If ALL candidate faces are unavailable, this output can't be checked
-                if all(f not in available_faces for f in candidate_faces):
-                    return True
-            return False
-
         # Collect eligible rules, deduplicated by rule_id
         seen_rule_ids: Set[str] = set()
         eligible: List[Dict] = []
@@ -720,7 +723,7 @@ class LogicEngine:
             rid = rule.get('rule_id', '')
             if not rid or rid in seen_rule_ids:
                 continue
-            if _rule_has_unavailable_output(rule):
+            if rule_has_unavailable_output(rule, available_faces):
                 continue
             seen_rule_ids.add(rid)
             eligible.append(rule)
@@ -769,6 +772,50 @@ class LogicEngine:
         print(f"[LogicEngine] Guided sequence built: {len(steps)} steps "
               f"(filtered from {len(self.rules)} total rules)")
         return steps
+
+    def build_single_guided_step(
+        self,
+        rule_id: str,
+        available_faces: Optional[Set[str]] = None,
+        step_num: int = 1,
+    ) -> Optional[Dict]:
+        """
+        Build one guided step dict for manual/custom mode (same shape as build_guided_sequence).
+        Returns None if rule_id is unknown or outputs require unavailable faces.
+        """
+        if available_faces is None:
+            available_faces = set("ABCDEF")
+
+        rule = self.rule_by_id.get(rule_id)
+        if not rule:
+            return None
+
+        if rule_has_unavailable_output(rule, available_faces):
+            return None
+
+        input_face = rule.get("input", {}).get("face", "")
+        input_hole = rule.get("input", {}).get("hole_id", "")
+        expected_outputs = []
+        for output in rule.get("expected_outputs", []):
+            out_face = output.get("face", "")
+            out_hole = output.get("hole_id", "")
+            candidate_faces = parse_face_to_faces(out_face)
+            available_candidates = [f for f in candidate_faces if f in available_faces]
+            if available_candidates:
+                display_face = available_candidates[0]
+                expected_outputs.append({
+                    "face": display_face,
+                    "hole_id": out_hole,
+                    "mandatory": output.get("mandatory", True),
+                })
+
+        return {
+            "step_num": step_num,
+            "rule_id": rule.get("rule_id", ""),
+            "input_face": input_face,
+            "input_hole": input_hole,
+            "expected_outputs": expected_outputs,
+        }
 
     def set_guided_step(self, step_index: int):
         """

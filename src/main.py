@@ -19,22 +19,20 @@ import argparse
 from datetime import datetime
 from typing import Optional
 
-import cv2
-
 # Add src to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Qt Platform Plugin fix for macOS
+# macOS only: hint Qt where platform plugins live (no-op on Windows/Linux)
 if sys.platform == "darwin":
     try:
         import PyQt6
-        # Attempt to locate the platforms plugin directory
-        pyqt_dir = os.path.dirname(PyQt6.__file__)
-        plugin_path = os.path.join(pyqt_dir, "Qt6", "plugins", "platforms")
-        if os.path.exists(plugin_path):
-            os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = plugin_path
+        _p = os.path.join(os.path.dirname(PyQt6.__file__), "Qt6", "plugins", "platforms")
+        if os.path.isdir(_p):
+            os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", _p)
     except ImportError:
         pass
+
+import cv2
 
 from config_loader import load_cameras, load_rules
 from camera_worker import camera_worker_process
@@ -93,7 +91,10 @@ def main():
         dashboard, qt_app = create_dashboard(
             total_rules=0,
             force_cv=force_cv,
-            cameras=cameras
+            cameras=cameras,
+            config_dir=os.path.abspath(args.config_dir),
+            project_root=project_root,
+            cameras_file=os.path.abspath(cameras_file),
         )
         ui_mode = "PyQt6" if qt_app else "OpenCV"
         print(f"[Main] Dashboard initialized ({ui_mode}).")
@@ -131,7 +132,8 @@ def main():
         "Manifold 3": "config/DALIA/connectivity_rules.json"  # Default fallback for POC
     }
     
-    rule_file = manifold_rules.get(selected_manifold, "config/DALIA/connectivity_rules.json")
+    rule_rel = manifold_rules.get(selected_manifold, "config/DALIA/connectivity_rules.json")
+    rule_file = os.path.normpath(os.path.join(project_root, rule_rel))
     
     # Initialize Logic Engine dynamically
     engine = LogicEngine(rule_file)
@@ -153,15 +155,33 @@ def main():
         dashboard.progress_bar.setRange(0, total_rules)
         dashboard.progress_bar.setFormat(f"%v / {total_rules} steps")
 
-    # ── Build guided sequence (Sequential mode) ──
+    # ── Build guided sequence (Sequential or manual/custom single rule) ──
     guided_sequence = []
+    available_faces = {'A', 'B', 'C', 'D', 'E'}  # Face F excluded (no camera)
+    custom_rule_id = getattr(dashboard, "custom_rule_id", None) if dashboard else None
+
     if inspection_mode == "sequential":
-        available_faces = {'A', 'B', 'C', 'D', 'E'}  # Face F excluded (no camera)
         guided_sequence = engine.build_guided_sequence(available_faces)
         engine.guided_mode = True
         if guided_sequence:
             engine.set_guided_step(0)
         print(f"[Main] Guided sequence: {len(guided_sequence)} steps (Face F output rules excluded)")
+
+    elif inspection_mode == "custom":
+        if custom_rule_id:
+            step = engine.build_single_guided_step(custom_rule_id, available_faces, step_num=1)
+            if step:
+                guided_sequence = [step]
+                engine.guided_mode = True
+                engine._guided_sequence = guided_sequence
+                engine.set_guided_step(0)
+                print(f"[Main] Manual mode: single rule {custom_rule_id}")
+            else:
+                engine.guided_mode = False
+                print(f"[Main] Manual rule {custom_rule_id!r} not runnable with current cameras — reactive mode")
+        else:
+            engine.guided_mode = False
+            print("[Main] Manual mode: no rule selected — reactive mode (all rules)")
 
     if dashboard and guided_sequence and hasattr(dashboard, 'load_guided_sequence'):
         dashboard.load_guided_sequence(guided_sequence)
