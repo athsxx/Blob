@@ -180,6 +180,8 @@ class GlobalState:
         Args:
             camera_result: Dict with 'face', 'detections', 'health' keys
         """
+        if not isinstance(camera_result, dict):
+            return
         face = camera_result.get('face', 'X')
         camera_id = camera_result.get('camera_id', f'CAM_{face}')
         
@@ -403,6 +405,8 @@ class LogicEngine:
             List of rule evaluation results (0 or 1 per rule per activation)
         """
         # Always update camera state (keeps feeds live even when paused)
+        if not isinstance(camera_result, dict):
+            return []
         self.global_state.update_from_detection(camera_result)
 
         # Debug: print detected holes every second
@@ -932,6 +936,8 @@ class LogicEngine:
         Returns:
             RuleEvaluationResult representing the override, or None
         """
+        if not rule_id:
+            return None
         if result not in ("PASS", "FAIL"):
             return None
         
@@ -983,7 +989,7 @@ class LogicEngine:
 
     def get_all_rule_ids(self) -> List[str]:
         """Get all rule IDs for the override dropdown."""
-        return [r.get('rule_id', '') for r in self.rules]
+        return [rid for r in self.rules if (rid := r.get("rule_id"))]
 
 
 # --- TESTING ---

@@ -12,20 +12,104 @@ Files loaded:
 
 import json
 import os
-from typing import List, Dict, Optional, Any
+import re
+from typing import List, Dict, Optional, Any, Tuple
 
 # Default paths (relative to project root)
 CONFIG_DIR = "config"
 CAMERAS_FILE = os.path.join(CONFIG_DIR, "cameras.json")
 ROIS_FILE = os.path.join(CONFIG_DIR, "rois.json")
 RULES_FILE = "connectivity_rules.json"
+MANIFOLDS_REGISTRY_FILE = "manifolds_registry.json"
+
+# Shipped defaults when registry file is missing or empty
+DEFAULT_MANIFOLD_REGISTRY_ENTRIES: List[Dict[str, str]] = [
+    {"label": "DALIA", "folder": "DALIA"},
+    {"label": "Manifold 2", "folder": "DALIA"},
+    {"label": "Manifold 3", "folder": "DALIA"},
+]
 
 
-def manifold_data_subdirectory(manifold: str) -> str:
+def load_manifold_registry_entries(config_dir: str) -> List[Dict[str, Any]]:
+    """Load manifold label → config folder mappings from config/manifolds_registry.json."""
+    path = os.path.join(config_dir, MANIFOLDS_REGISTRY_FILE)
+    if not os.path.isfile(path):
+        return [dict(x) for x in DEFAULT_MANIFOLD_REGISTRY_ENTRIES]
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        ent = data.get("entries") or []
+        if not ent:
+            return [dict(x) for x in DEFAULT_MANIFOLD_REGISTRY_ENTRIES]
+        return list(ent)
+    except (json.JSONDecodeError, OSError):
+        return [dict(x) for x in DEFAULT_MANIFOLD_REGISTRY_ENTRIES]
+
+
+def save_manifold_registry_entries(config_dir: str, entries: List[Dict[str, Any]]) -> None:
+    path = os.path.join(config_dir, MANIFOLDS_REGISTRY_FILE)
+    os.makedirs(config_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"entries": entries}, f, indent=2)
+
+
+def manifold_labels(config_dir: str) -> List[str]:
+    labels = [str(e["label"]) for e in load_manifold_registry_entries(config_dir) if e.get("label")]
+    return labels if labels else ["DALIA"]
+
+
+def manifold_folder_for_label(manifold_label: str, config_dir: str) -> Optional[str]:
+    label = str(manifold_label).strip()
+    for e in load_manifold_registry_entries(config_dir):
+        if str(e.get("label", "")).strip() == label:
+            return str(e.get("folder") or "DALIA")
+    return None
+
+
+def list_config_subdirs_with_rules(config_dir: str) -> List[str]:
+    """Folder names under config_dir that contain connectivity_rules.json (for copy template)."""
+    out: List[str] = []
+    if not os.path.isdir(config_dir):
+        return out
+    for name in sorted(os.listdir(config_dir)):
+        p = os.path.join(config_dir, name)
+        if os.path.isdir(p) and os.path.isfile(os.path.join(p, "connectivity_rules.json")):
+            out.append(name)
+    return out
+
+
+def slug_manifold_folder_id(display_name: str) -> str:
+    """Filesystem-safe folder name from a display name."""
+    s = re.sub(r"[^a-zA-Z0-9_-]+", "_", (display_name or "").strip()).strip("_")
+    return s or "Manifold"
+
+
+def validate_manifold_folder_id(folder_id: str) -> Tuple[bool, str]:
+    if not folder_id or not re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", folder_id):
+        return False, "Use letters, numbers, underscore, or hyphen (must start with a letter or number)."
+    if folder_id in (".", ".."):
+        return False, "Invalid folder name."
+    return True, ""
+
+
+def load_all_cameras_from_file(cameras_file: str) -> List[Dict[str, Any]]:
+    """All camera entries in cameras.json (including disabled), for face→USB and ROI filenames."""
+    data = _load_json(cameras_file)
+    if not data:
+        return []
+    return list(data.get("cameras", []))
+
+
+def manifold_data_subdirectory(manifold: str, config_dir: Optional[str] = None) -> str:
     """
-    Folder name under config/ where ROI files (hole_positions_cam*.json) live.
-    Manifold 2/3 POC shares DALIA disk layout until dedicated folders exist.
+    Folder name under config/ where ROI files (hole_positions_*.json) live.
+    If config_dir is set, resolves via manifolds_registry.json.
+    Legacy fallback when config_dir is omitted (e.g. older call sites).
     """
+    if config_dir:
+        folder = manifold_folder_for_label(manifold, config_dir)
+        if folder:
+            return folder
     if not manifold:
         return "DALIA"
     m = str(manifold).strip()
@@ -54,6 +138,44 @@ def _load_json(filepath: str) -> Optional[Dict[str, Any]]:
     except json.JSONDecodeError as e:
         print(f"[ConfigLoader] Error parsing {filepath}: {e}")
         return None
+
+
+def validate_enabled_cameras(cameras: List[Dict[str, Any]]) -> List[str]:
+    """
+    Return human-readable errors for enabled camera entries (missing fields).
+    Does not reject unknown optional keys.
+    """
+    errors: List[str] = []
+    for i, cam in enumerate(cameras):
+        if not cam.get("enabled", True):
+            continue
+        prefix = f"Camera entry #{i + 1}"
+        if cam.get("usb_index") is None:
+            errors.append(f"{prefix}: missing usb_index")
+        if not cam.get("face"):
+            errors.append(f"{prefix}: missing face")
+        if not cam.get("config"):
+            errors.append(f"{prefix}: missing config (ROI filename)")
+    return errors
+
+
+def connectivity_rules_path_ok(project_root: str, config_subfolder: str) -> tuple:
+    """
+    Return (True, path) if rules file exists and contains a non-empty 'rules' list.
+    Otherwise (False, path_or_expected).
+    """
+    path = os.path.normpath(
+        os.path.join(project_root, CONFIG_DIR, config_subfolder, RULES_FILE)
+    )
+    if not os.path.isfile(path):
+        return False, path
+    data = _load_json(path)
+    if not data:
+        return False, path
+    rules = data.get("rules")
+    if not isinstance(rules, list) or len(rules) == 0:
+        return False, path
+    return True, path
 
 
 def load_cameras(filepath: str = CAMERAS_FILE) -> List[Dict[str, Any]]:

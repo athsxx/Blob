@@ -190,9 +190,11 @@ class CalibrateRoiDialog(QDialog):
         super().__init__(parent)
         self._cameras = cameras
         self._manifold = manifold or "DALIA"
-        self._data_subdir = data_subdir or manifold_data_subdirectory(self._manifold)
         self._config_dir = config_dir
         self._project_root = project_root
+        self._data_subdir = data_subdir or manifold_data_subdirectory(
+            self._manifold, self._config_dir
+        )
 
         self.setWindowTitle("Calibrate ROIs")
         if stylesheet:

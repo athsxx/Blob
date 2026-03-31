@@ -35,6 +35,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional, Set
 
 from logic_engine import rule_has_unavailable_output
+from config_loader import manifold_labels, manifold_folder_for_label
 
 # Faces with cameras (matches main.py sequential guided filter)
 MANUAL_AVAILABLE_FACES: Set[str] = {"A", "B", "C", "D", "E", "F"}
@@ -48,7 +49,7 @@ try:
         QCheckBox, QMessageBox, QFormLayout,
     )
     from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-    from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QPalette
+    from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QPalette, QCloseEvent
     HAS_PYQT6 = True
 except ImportError:
     HAS_PYQT6 = False
@@ -57,12 +58,15 @@ except ImportError:
 if HAS_PYQT6:
     try:
         from camera_setup_ui import CameraSetupDialog, CalibrateRoiDialog
+        from manifold_setup_ui import AddManifoldDialog
     except ImportError:
         CameraSetupDialog = None  # type: ignore
         CalibrateRoiDialog = None  # type: ignore
+        AddManifoldDialog = None  # type: ignore
 else:
     CameraSetupDialog = None  # type: ignore
     CalibrateRoiDialog = None  # type: ignore
+    AddManifoldDialog = None  # type: ignore
 
 
 # ──────────────────────────────────────────────
@@ -694,14 +698,6 @@ class OverrideDialog(QDialog):
 # Selection Pages
 # ──────────────────────────────────────────────
 
-# Must match main.py manifold_rules paths (relative to project root)
-MANIFOLD_RULES_REL: Dict[str, str] = {
-    "DALIA": "config/DALIA/connectivity_rules.json",
-    "Manifold 2": "config/DALIA/connectivity_rules.json",
-    "Manifold 3": "config/DALIA/connectivity_rules.json",
-}
-
-
 class ManualInspectionSetupPage(QWidget):
     """
     Custom / manual mode: pick manifold (again or change), input face, and rule from dropdowns.
@@ -709,9 +705,10 @@ class ManualInspectionSetupPage(QWidget):
     sig_continue = pyqtSignal()
     sig_back = pyqtSignal()
 
-    def __init__(self, project_root: str, parent=None):
+    def __init__(self, project_root: str, config_dir: str, parent=None):
         super().__init__(parent)
         self._project_root = project_root
+        self._config_dir = os.path.abspath(config_dir)
         self._rules_raw: List[Dict[str, Any]] = []
 
         layout = QVBoxLayout(self)
@@ -746,7 +743,6 @@ class ManualInspectionSetupPage(QWidget):
         form.setHorizontalSpacing(16)
 
         self.combo_manifold = QComboBox()
-        self.combo_manifold.addItems(list(MANIFOLD_RULES_REL.keys()))
         self.combo_manifold.setMinimumWidth(320)
         self.combo_manifold.setStyleSheet(
             "font-size: 15px; padding: 8px 12px; background: #21262d; color: #e6edf3; "
@@ -798,9 +794,26 @@ class ManualInspectionSetupPage(QWidget):
         if idx >= 0:
             self.combo_manifold.setCurrentIndex(idx)
 
+    def set_manifold_items(self, labels: List[str], select: Optional[str] = None) -> None:
+        cur = self.combo_manifold.currentText()
+        self.combo_manifold.clear()
+        for L in labels:
+            self.combo_manifold.addItem(L)
+        if select and self.combo_manifold.findText(select) >= 0:
+            self.combo_manifold.setCurrentText(select)
+        elif cur and self.combo_manifold.findText(cur) >= 0:
+            self.combo_manifold.setCurrentText(cur)
+        elif self.combo_manifold.count() > 0:
+            self.combo_manifold.setCurrentIndex(0)
+        self._load_rules_file()
+        self._refill_rules_combo()
+
     def _rules_path(self) -> str:
-        rel = MANIFOLD_RULES_REL.get(self.combo_manifold.currentText(), MANIFOLD_RULES_REL["DALIA"])
-        return os.path.normpath(os.path.join(self._project_root, rel))
+        label = self.combo_manifold.currentText()
+        folder = manifold_folder_for_label(label, self._config_dir) or "DALIA"
+        return os.path.normpath(
+            os.path.join(self._project_root, "config", folder, "connectivity_rules.json")
+        )
 
     def _load_rules_file(self) -> bool:
         path = self._rules_path()
@@ -928,9 +941,12 @@ class ManifoldSelectionPage(QWidget):
     """Initial landing page to select the manifold model."""
     sig_manifold_selected = pyqtSignal(str)
     sig_back = pyqtSignal()
+    sig_add_manifold = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, config_dir: str, project_root: str, parent=None):
         super().__init__(parent)
+        self._config_dir = os.path.abspath(config_dir)
+        self._project_root = project_root
         self.setObjectName("manifoldSelectionPage")
         
         layout = QVBoxLayout(self)
@@ -960,7 +976,6 @@ class ManifoldSelectionPage(QWidget):
 
         # Manifold Dropdown
         self.combo_manifold = QComboBox()
-        self.combo_manifold.addItems(["DALIA", "Manifold 2", "Manifold 3"])
         self.combo_manifold.setCursor(Qt.CursorShape.PointingHandCursor)
         self.combo_manifold.setStyleSheet("""
             QComboBox {
@@ -976,8 +991,24 @@ class ManifoldSelectionPage(QWidget):
         """)
         body_layout.addWidget(self.combo_manifold)
 
+        add_row = QHBoxLayout()
+        add_row.addStretch()
+        self.btn_add_manifold = QPushButton("+ Add manifold…")
+        self.btn_add_manifold.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_add_manifold.setObjectName("btnSetup")
+        self.btn_add_manifold.setStyleSheet(
+            "QPushButton { background-color: #21262d; color: #58a6ff; font-weight: bold; "
+            "font-size: 14px; padding: 10px 20px; border: 1px solid #30363d; border-radius: 6px; }"
+            "QPushButton:hover { background-color: #30363d; }"
+        )
+        self.btn_add_manifold.clicked.connect(self.sig_add_manifold.emit)
+        add_row.addWidget(self.btn_add_manifold)
+        add_row.addStretch()
+        body_layout.addLayout(add_row)
+
         poc_note = QLabel(
-            "Manifold 2 and 3 currently use the same rules and config as DALIA (POC)."
+            "Add a new manifold to create a config folder, copy rules from a template, and calibrate ROIs per face. "
+            "Manifold 2 and 3 entries still share the DALIA folder until you change the registry."
         )
         poc_note.setWordWrap(True)
         poc_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1019,6 +1050,18 @@ class ManifoldSelectionPage(QWidget):
         body_layout.addWidget(info_lbl)
 
         layout.addWidget(body, stretch=1)
+
+    def set_manifold_items(self, labels: List[str], select: Optional[str] = None) -> None:
+        cur = self.combo_manifold.currentText()
+        self.combo_manifold.clear()
+        for L in labels:
+            self.combo_manifold.addItem(L)
+        if select and self.combo_manifold.findText(select) >= 0:
+            self.combo_manifold.setCurrentText(select)
+        elif cur and self.combo_manifold.findText(cur) >= 0:
+            self.combo_manifold.setCurrentText(cur)
+        elif self.combo_manifold.count() > 0:
+            self.combo_manifold.setCurrentIndex(0)
 
 
 class ModeSelectionPage(QWidget):
@@ -1188,6 +1231,7 @@ class DashboardWindow(QMainWindow):
         self.selected_mode = None
         self.custom_rule_id: Optional[str] = None
         self._prep_back_target: int = 1  # stacked index: 1 = manifold, 2 = manual setup
+        self._setup_event_loop = None  # QEventLoop — quit if window closed during setup (avoids hang)
 
         # ── Central Widget & Global Layout ──
         central = QWidget()
@@ -1234,16 +1278,21 @@ class DashboardWindow(QMainWindow):
         self.stacked_widget.addWidget(self.mode_page)
 
         # Stack 1: Manifold Selection (Second page)
-        self.manifold_page = ManifoldSelectionPage()
+        self.manifold_page = ManifoldSelectionPage(self.config_dir, self.project_root, self)
         self.manifold_page.sig_manifold_selected.connect(self._on_manifold_selected)
         self.manifold_page.sig_back.connect(self._on_manifold_back)
+        self.manifold_page.sig_add_manifold.connect(self._on_add_manifold)
         self.stacked_widget.addWidget(self.manifold_page)
 
         # Stack 2: Manual mode — manifold / face / rule dropdowns
-        self.manual_setup_page = ManualInspectionSetupPage(self.project_root, self)
+        self.manual_setup_page = ManualInspectionSetupPage(self.project_root, self.config_dir, self)
         self.manual_setup_page.sig_continue.connect(self._on_manual_setup_continue)
         self.manual_setup_page.sig_back.connect(self._on_manual_setup_back)
         self.stacked_widget.addWidget(self.manual_setup_page)
+
+        _mlabels = manifold_labels(self.config_dir)
+        self.manifold_page.set_manifold_items(_mlabels)
+        self.manual_setup_page.set_manifold_items(_mlabels)
 
         # Stack 3: Pre-inspection (calibrate ROIs, then continue)
         self.prep_page = PreInspectionSetupPage(self)
@@ -1403,6 +1452,27 @@ class DashboardWindow(QMainWindow):
     def _on_manifold_back(self):
         self.stacked_widget.setCurrentIndex(0)
 
+    def _on_add_manifold(self):
+        if AddManifoldDialog is None:
+            return
+        cf = self.cameras_file or os.path.join(self.config_dir or "", "cameras.json")
+        dlg = AddManifoldDialog(
+            self.config_dir or os.path.join(self.project_root, "config"),
+            self.project_root,
+            cf,
+            DARK_STYLESHEET,
+            self,
+        )
+        dlg.exec()
+        if dlg.created_label:
+            self.refresh_manifold_labels(dlg.created_label)
+
+    def refresh_manifold_labels(self, select: Optional[str] = None) -> None:
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        labels = manifold_labels(cdir)
+        self.manifold_page.set_manifold_items(labels, select)
+        self.manual_setup_page.set_manifold_items(labels)
+
     def _on_manual_setup_back(self):
         self.stacked_widget.setCurrentIndex(1)
 
@@ -1441,7 +1511,8 @@ class DashboardWindow(QMainWindow):
         from config_loader import manifold_data_subdirectory
 
         manifold = self.selected_manifold or "DALIA"
-        sub = manifold_data_subdirectory(manifold)
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        sub = manifold_data_subdirectory(manifold, cdir)
         cdir = self.config_dir or os.path.join(self.project_root, "config")
         dlg = CalibrateRoiDialog(
             self._all_camera_configs(),
@@ -1482,13 +1553,35 @@ class DashboardWindow(QMainWindow):
         self._guided_sequence = sequence
         total = len(sequence)
         self.step_list.load_sequence(sequence)
-        self.progress_bar.setRange(0, total)
+        denom = max(total, 1)
+        self.progress_bar.setRange(0, denom)
         self.progress_bar.setValue(0)
-        self.progress_bar.setFormat(f"%v / {total} steps")
+        self.progress_bar.setFormat(f"%v / {denom} steps")
         if sequence:
             self._current_step_index = 0
             self.step_list.set_active(0)
             self.instruction_panel.show_step(sequence[0], total)
+        else:
+            self._current_step_index = 0
+            self.instruction_panel.status_lbl.setText("No guided steps")
+            self.instruction_panel.status_lbl.setStyleSheet(
+                "color: #d29922; font-size: 18px; font-weight: bold;"
+            )
+            self.instruction_panel.face_hole_lbl.setText(
+                "Check connectivity rules and camera availability, or use manual mode."
+            )
+
+    def set_setup_event_loop(self, loop) -> None:
+        """While waiting for manifold selection, closing the window quits this loop (see closeEvent)."""
+        self._setup_event_loop = loop
+
+    def closeEvent(self, event: QCloseEvent):
+        from PyQt6.QtCore import QEventLoop, QTimer
+
+        loop = getattr(self, "_setup_event_loop", None)
+        if loop is not None and isinstance(loop, QEventLoop) and loop.isRunning():
+            QTimer.singleShot(0, loop.quit)
+        super().closeEvent(event)
 
     def set_hero_camera(self, face_id: str):
         """
@@ -1559,6 +1652,8 @@ class DashboardWindow(QMainWindow):
                 self.set_hero_camera(input_face)
 
     def update_step_result(self, step_index: int, passed: bool):
+        if step_index < 0 or not self._guided_sequence or step_index >= len(self._guided_sequence):
+            return
         self.step_list.mark_result(step_index, passed)
         if passed:
             self.instruction_panel.set_pass()

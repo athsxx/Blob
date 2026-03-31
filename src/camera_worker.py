@@ -61,7 +61,6 @@ class CameraWorker:
         self.display_queue = display_queue
         self.capture_settings = capture_settings or {}
         self.hub_id = hub_id
-        self.hub_id = hub_id
         self.open_semaphore = open_semaphore
         self.command_queue = command_queue
         
