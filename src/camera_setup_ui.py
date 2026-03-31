@@ -25,6 +25,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
+from config_loader import manifold_data_subdirectory
+
 
 def scan_camera_indices() -> List[tuple]:
     """Return list of (index, opened_ok) for indices 0..9."""
@@ -72,7 +74,8 @@ class CameraSetupDialog(QDialog):
         root.addWidget(title)
 
         hint = QLabel(
-            "Save writes this file on disk. Restart the application so workers pick up changes. "
+            "Default layout: Face A → USB 0 + hole_positions_cam0.json, … Face F → USB 5 + hole_positions_cam5.json. "
+            "Change USB indices only if your wiring differs. Save writes cameras.json; restart the app so workers reload. "
             "Use Scan to see which indices open (brief freeze is normal)."
         )
         hint.setWordWrap(True)
@@ -93,7 +96,14 @@ class CameraSetupDialog(QDialog):
             except (json.JSONDecodeError, OSError):
                 self._data = {}
 
-        for cam in self._data.get("cameras", []):
+        face_order = "ABCDEF"
+        cams = list(self._data.get("cameras", []))
+        cams.sort(
+            key=lambda c: face_order.index(c["face"])
+            if c.get("face") in face_order
+            else 99
+        )
+        for cam in cams:
             face = str(cam.get("face", "?"))
             row = QHBoxLayout()
             sp = QSpinBox()
@@ -174,11 +184,13 @@ class CalibrateRoiDialog(QDialog):
         config_dir: str,
         project_root: str,
         stylesheet: str = "",
+        data_subdir: Optional[str] = None,
         parent=None,
     ):
         super().__init__(parent)
         self._cameras = cameras
         self._manifold = manifold or "DALIA"
+        self._data_subdir = data_subdir or manifold_data_subdirectory(self._manifold)
         self._config_dir = config_dir
         self._project_root = project_root
 
@@ -192,18 +204,29 @@ class CalibrateRoiDialog(QDialog):
         layout.addWidget(QLabel("Face to calibrate (opens OpenCV window; close it when done):"))
 
         self.combo = QComboBox()
-        for cam in cameras:
-            if not cam.get("enabled", True):
-                continue
+        face_order = "ABCDEF"
+        ordered = sorted(
+            cameras,
+            key=lambda c: face_order.index(c["face"])
+            if c.get("face") in face_order
+            else 99,
+        )
+        for cam in ordered:
             face = cam.get("face")
+            if face is None:
+                continue
             usb = cam.get("usb_index")
-            if face is not None:
-                self.combo.addItem(f"Face {face}  (USB {usb})", userData=face)
+            en = cam.get("enabled", True)
+            suffix = "" if en else " — disabled"
+            self.combo.addItem(f"Face {face}  (USB {usb}){suffix}", userData=face)
         layout.addWidget(self.combo)
 
-        layout.addWidget(
-            QLabel(f"Manifold: {self._manifold} — saves under config/{self._manifold}/")
+        roi_hint = QLabel(
+            f"Manifold: {self._manifold} — ROI files: config/{self._data_subdir}/hole_positions_camN.json "
+            f"(N = USB index). Values on disk stay the same until you save in the calibration tool."
         )
+        roi_hint.setWordWrap(True)
+        layout.addWidget(roi_hint)
 
         bb = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -223,7 +246,7 @@ class CalibrateRoiDialog(QDialog):
             return
         usb = int(cam.get("usb_index", 0))
         base = os.path.basename(cam.get("config", "hole_positions_cam0.json"))
-        roi_path = os.path.normpath(os.path.join(self._config_dir, self._manifold, base))
+        roi_path = os.path.normpath(os.path.join(self._config_dir, self._data_subdir, base))
         cal_script = os.path.join(self._project_root, "calibrate.py")
         if not os.path.isfile(cal_script):
             QMessageBox.critical(self, "Calibrate", f"Missing:\n{cal_script}")

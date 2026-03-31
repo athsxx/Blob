@@ -21,6 +21,19 @@ ROIS_FILE = os.path.join(CONFIG_DIR, "rois.json")
 RULES_FILE = "connectivity_rules.json"
 
 
+def manifold_data_subdirectory(manifold: str) -> str:
+    """
+    Folder name under config/ where ROI files (hole_positions_cam*.json) live.
+    Manifold 2/3 POC shares DALIA disk layout until dedicated folders exist.
+    """
+    if not manifold:
+        return "DALIA"
+    m = str(manifold).strip()
+    if m in ("Manifold 2", "Manifold 3"):
+        return "DALIA"
+    return m or "DALIA"
+
+
 def _load_json(filepath: str) -> Optional[Dict[str, Any]]:
     """
     Load and parse a JSON file.

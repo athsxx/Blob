@@ -34,7 +34,7 @@ if sys.platform == "darwin":
 
 import cv2
 
-from config_loader import load_cameras, load_rules
+from config_loader import load_cameras, load_rules, manifold_data_subdirectory
 from camera_worker import camera_worker_process
 from dashboard import create_dashboard, HAS_PYQT6
 from logic_engine import LogicEngine
@@ -141,12 +141,13 @@ def main():
     print(f"[Main] Logic Engine initialized with {total_rules} rules for {selected_manifold}.")
     logger.log_system("INFO", f"Logic Engine initialized with {total_rules} rules for {selected_manifold}")
     
-    # Update camera configs based on Manifold (if they had specific folders, we'd inject it here)
+    # Resolve ROI JSON folder (Manifold 2/3 share DALIA on disk until separate trees exist)
+    roi_subdir = manifold_data_subdirectory(selected_manifold)
     print("\nCamera → Face Mapping:")
     for cam in cameras:
         status = "✓" if cam.get('enabled', True) else "✗"
         if selected_manifold:
-            cam['config'] = f"config/{selected_manifold}/{os.path.basename(cam['config'])}"
+            cam['config'] = f"config/{roi_subdir}/{os.path.basename(cam['config'])}"
         print(f"  [{status}] USB {cam['usb_index']} → Face {cam['face']} → {cam['config']}")
     print()
 
@@ -157,7 +158,7 @@ def main():
 
     # ── Build guided sequence (Sequential or manual/custom single rule) ──
     guided_sequence = []
-    available_faces = {'A', 'B', 'C', 'D', 'E'}  # Face F excluded (no camera)
+    available_faces = {'A', 'B', 'C', 'D', 'E', 'F'}
     custom_rule_id = getattr(dashboard, "custom_rule_id", None) if dashboard else None
 
     if inspection_mode == "sequential":
@@ -165,7 +166,7 @@ def main():
         engine.guided_mode = True
         if guided_sequence:
             engine.set_guided_step(0)
-        print(f"[Main] Guided sequence: {len(guided_sequence)} steps (Face F output rules excluded)")
+        print(f"[Main] Guided sequence: {len(guided_sequence)} steps (all six faces)")
 
     elif inspection_mode == "custom":
         if custom_rule_id:

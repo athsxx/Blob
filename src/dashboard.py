@@ -5,7 +5,8 @@ Stacked pages (QStackedWidget indices):
   0 — Mode: Sequential vs Manual inspection
   1 — Manifold: DALIA / Manifold 2 / Manifold 3
   2 — Manual setup only: dropdowns for manifold, input face, rule (then Continue)
-  3 — Live dashboard (cameras, steps, START/STOP, etc.)
+  3 — Pre-inspection: optional ROI calibration, then Continue to live view
+  4 — Live dashboard (cameras, steps, START/STOP, etc.)
 
 3-column layout:
   ┌──────────────────────────────────────────────────────────────┐
@@ -35,8 +36,8 @@ from typing import Dict, List, Any, Optional, Set
 
 from logic_engine import rule_has_unavailable_output
 
-# Faces with cameras in POC (matches main.py sequential guided filter)
-MANUAL_AVAILABLE_FACES: Set[str] = {"A", "B", "C", "D", "E"}
+# Faces with cameras (matches main.py sequential guided filter)
+MANUAL_AVAILABLE_FACES: Set[str] = {"A", "B", "C", "D", "E", "F"}
 
 try:
     from PyQt6.QtWidgets import (
@@ -782,7 +783,7 @@ class ManualInspectionSetupPage(QWidget):
         btn_back = QPushButton("← Back")
         btn_back.setObjectName("btnSetup")
         btn_back.clicked.connect(self.sig_back.emit)
-        btn_go = QPushButton("Continue to live view")
+        btn_go = QPushButton("Continue")
         btn_go.setObjectName("btnStart")
         btn_go.clicked.connect(self._emit_continue_if_ok)
         btn_row.addStretch()
@@ -853,9 +854,80 @@ class ManualInspectionSetupPage(QWidget):
         return self.combo_rule.currentData()
 
 
+class PreInspectionSetupPage(QWidget):
+    """Optional ROI calibration before the live dashboard; main.py waits until Continue here."""
+
+    sig_continue = pyqtSignal()
+    sig_back = pyqtSignal()
+    sig_calibrate = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QFrame()
+        header.setStyleSheet("background-color: #161b22;")
+        header.setFixedHeight(100)
+        hl = QVBoxLayout(header)
+        hl.setContentsMargins(40, 24, 40, 16)
+        title = QLabel("Before live inspection")
+        title.setStyleSheet(
+            "color: #f0f6fc; font-size: 22px; font-weight: bold; background: transparent;"
+        )
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub = QLabel("Calibrate ROIs if needed, then continue. The app will start cameras after Continue.")
+        sub.setStyleSheet("color: #8b949e; font-size: 13px; background: transparent;")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hl.addWidget(title)
+        hl.addWidget(sub)
+        layout.addWidget(header)
+
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bl.setSpacing(20)
+        bl.setContentsMargins(48, 32, 48, 32)
+
+        explain = QLabel(
+            "Face A–F map to USB indices 0–5 and to hole_positions_cam0.json … hole_positions_cam5.json "
+            "under your manifold folder (Manifold 2/3 use the DALIA ROI folder until separate files exist). "
+            "Those files do not change unless you save new circles in the calibration tool."
+        )
+        explain.setWordWrap(True)
+        explain.setStyleSheet("color: #8b949e; font-size: 13px; max-width: 560px;")
+        explain.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bl.addWidget(explain)
+
+        btn_cal = QPushButton("Calibrate ROIs…")
+        btn_cal.setObjectName("btnSetup")
+        btn_cal.setMinimumWidth(280)
+        btn_cal.clicked.connect(self.sig_calibrate.emit)
+        bl.addWidget(btn_cal, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        btn_go = QPushButton("Continue to live inspection")
+        btn_go.setObjectName("btnStart")
+        btn_go.setMinimumWidth(280)
+        btn_go.clicked.connect(self.sig_continue.emit)
+        bl.addWidget(btn_go, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_back = QPushButton("← Back")
+        btn_back.setObjectName("btnSetup")
+        btn_back.clicked.connect(self.sig_back.emit)
+        btn_row.addWidget(btn_back)
+        btn_row.addStretch()
+        bl.addLayout(btn_row)
+
+        layout.addWidget(body, stretch=1)
+
+
 class ManifoldSelectionPage(QWidget):
     """Initial landing page to select the manifold model."""
     sig_manifold_selected = pyqtSignal(str)
+    sig_back = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -912,6 +984,21 @@ class ManifoldSelectionPage(QWidget):
         poc_note.setStyleSheet("color: #6e7681; font-size: 12px; background-color: transparent; max-width: 420px;")
         body_layout.addWidget(poc_note)
 
+        back_row = QHBoxLayout()
+        back_row.addStretch()
+        btn_back = QPushButton("← Back")
+        btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_back.setObjectName("btnSetup")
+        btn_back.setStyleSheet(
+            "QPushButton { background-color: #21262d; color: #e6edf3; font-weight: bold; "
+            "font-size: 14px; padding: 10px 24px; border: 1px solid #30363d; border-radius: 6px; }"
+            "QPushButton:hover { background-color: #30363d; }"
+        )
+        btn_back.clicked.connect(self.sig_back.emit)
+        back_row.addWidget(btn_back)
+        back_row.addStretch()
+        body_layout.addLayout(back_row)
+
         # Start Inspection Button
         self.btn_start = QPushButton("▶  START INSPECTION")
         self.btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -926,10 +1013,7 @@ class ManifoldSelectionPage(QWidget):
         self.btn_start.clicked.connect(lambda: self.sig_manifold_selected.emit(self.combo_manifold.currentText()))
         body_layout.addWidget(self.btn_start)
 
-        info_lbl = QLabel(
-            "Active Cameras: Face A · Face B · Face C · Face D · Face E   |   "
-            "Face F: Not Available (POC)"
-        )
+        info_lbl = QLabel("Active cameras: Face A · B · C · D · E · F (six USB feeds)")
         info_lbl.setStyleSheet("color: #484f58; font-size: 13px; background-color: transparent;")
         info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         body_layout.addWidget(info_lbl)
@@ -1030,7 +1114,7 @@ class ModeSelectionPage(QWidget):
         btn_row.addLayout(cust_col)
         body_layout.addLayout(btn_row)
 
-        info_lbl = QLabel("Active Cameras: Face A · Face B · Face C · Face D · Face E   |   Face F: Not Available (POC)")
+        info_lbl = QLabel("Active cameras: Face A · B · C · D · E · F (six USB feeds)")
         info_lbl.setStyleSheet("color: #484f58; font-size: 13px; background-color: transparent;")
         info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         body_layout.addWidget(info_lbl)
@@ -1069,21 +1153,30 @@ class DashboardWindow(QMainWindow):
         self.cameras_file = cameras_file or ""
         self._cameras_list: List[Dict[str, Any]] = list(cameras) if cameras else []
 
-        # Face → USB index mapping
+        # Face → USB index mapping (merge file so disabled faces still show correct USB if present)
         self._face_to_index: Dict[str, int] = {}
         if cameras:
             for c in cameras:
                 if c.get("face") and c.get("usb_index") is not None:
                     self._face_to_index[c["face"]] = c["usb_index"]
-        else:
+        if self.cameras_file and os.path.isfile(self.cameras_file):
             try:
-                import os, json
+                with open(self.cameras_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                for c in data.get("cameras", []):
+                    if c.get("face") is not None and c.get("usb_index") is not None:
+                        self._face_to_index[str(c["face"])] = int(c["usb_index"])
+            except (json.JSONDecodeError, OSError, TypeError, ValueError):
+                pass
+        if not self._face_to_index:
+            try:
                 p = os.path.join("config", "cameras.json")
                 if os.path.exists(p):
-                    data = json.load(open(p))
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
                     for c in data.get("cameras", []):
-                        if c.get("face") and c.get("usb_index") is not None:
-                            self._face_to_index[c["face"]] = c["usb_index"]
+                        if c.get("face") is not None and c.get("usb_index") is not None:
+                            self._face_to_index[str(c["face"])] = int(c["usb_index"])
             except Exception:
                 pass
 
@@ -1094,6 +1187,7 @@ class DashboardWindow(QMainWindow):
         self.selected_manifold = None
         self.selected_mode = None
         self.custom_rule_id: Optional[str] = None
+        self._prep_back_target: int = 1  # stacked index: 1 = manifold, 2 = manual setup
 
         # ── Central Widget & Global Layout ──
         central = QWidget()
@@ -1142,6 +1236,7 @@ class DashboardWindow(QMainWindow):
         # Stack 1: Manifold Selection (Second page)
         self.manifold_page = ManifoldSelectionPage()
         self.manifold_page.sig_manifold_selected.connect(self._on_manifold_selected)
+        self.manifold_page.sig_back.connect(self._on_manifold_back)
         self.stacked_widget.addWidget(self.manifold_page)
 
         # Stack 2: Manual mode — manifold / face / rule dropdowns
@@ -1150,7 +1245,14 @@ class DashboardWindow(QMainWindow):
         self.manual_setup_page.sig_back.connect(self._on_manual_setup_back)
         self.stacked_widget.addWidget(self.manual_setup_page)
 
-        # Stack 3: Live Dashboard
+        # Stack 3: Pre-inspection (calibrate ROIs, then continue)
+        self.prep_page = PreInspectionSetupPage(self)
+        self.prep_page.sig_continue.connect(self._on_prep_continue)
+        self.prep_page.sig_back.connect(self._on_prep_back)
+        self.prep_page.sig_calibrate.connect(self._on_prep_calibrate)
+        self.stacked_widget.addWidget(self.prep_page)
+
+        # Stack 4: Live Dashboard
         self.dashboard_page = QWidget()
         self.stacked_widget.addWidget(self.dashboard_page)
 
@@ -1295,7 +1397,11 @@ class DashboardWindow(QMainWindow):
             self.stacked_widget.setCurrentIndex(2)
         else:
             self.custom_rule_id = None
-            self._enter_live_dashboard(manifold)
+            self._prep_back_target = 1
+            self.stacked_widget.setCurrentIndex(3)
+
+    def _on_manifold_back(self):
+        self.stacked_widget.setCurrentIndex(0)
 
     def _on_manual_setup_back(self):
         self.stacked_widget.setCurrentIndex(1)
@@ -1306,11 +1412,51 @@ class DashboardWindow(QMainWindow):
             return
         self.custom_rule_id = rid
         self.selected_manifold = self.manual_setup_page.get_manifold()
-        self._enter_live_dashboard(self.selected_manifold)
+        self._prep_back_target = 2
+        self.stacked_widget.setCurrentIndex(3)
+
+    def _on_prep_continue(self):
+        self._enter_live_dashboard(self.selected_manifold or "DALIA")
+
+    def _on_prep_back(self):
+        self.stacked_widget.setCurrentIndex(self._prep_back_target)
+
+    def _on_prep_calibrate(self):
+        self._open_calibrate_roi_dialog()
+
+    def _all_camera_configs(self) -> List[Dict[str, Any]]:
+        """Full cameras.json list (includes disabled entries) for ROI calibration."""
+        if self.cameras_file and os.path.isfile(self.cameras_file):
+            try:
+                with open(self.cameras_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return list(data.get("cameras", []))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return list(self._cameras_list)
+
+    def _open_calibrate_roi_dialog(self):
+        if not HAS_PYQT6 or CalibrateRoiDialog is None:
+            return
+        from config_loader import manifold_data_subdirectory
+
+        manifold = self.selected_manifold or "DALIA"
+        sub = manifold_data_subdirectory(manifold)
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        dlg = CalibrateRoiDialog(
+            self._all_camera_configs(),
+            manifold,
+            cdir,
+            self.project_root,
+            DARK_STYLESHEET,
+            data_subdir=sub,
+            parent=self,
+        )
+        dlg.exec()
 
     def _enter_live_dashboard(self, manifold: str):
         self.selected_manifold = manifold
-        self.stacked_widget.setCurrentIndex(3)
+        self.stacked_widget.setCurrentIndex(4)
         self.global_header.show()
         self.header_status.show()
         self.clock_lbl.show()
@@ -1531,19 +1677,7 @@ class DashboardWindow(QMainWindow):
         dlg.exec()
 
     def _on_calibrate_rois(self):
-        if not HAS_PYQT6 or CalibrateRoiDialog is None:
-            return
-        manifold = self.selected_manifold or "DALIA"
-        cdir = self.config_dir or os.path.join(self.project_root, "config")
-        dlg = CalibrateRoiDialog(
-            self._cameras_list,
-            manifold,
-            cdir,
-            self.project_root,
-            DARK_STYLESHEET,
-            self,
-        )
-        dlg.exec()
+        self._open_calibrate_roi_dialog()
 
 
 # ──────────────────────────────────────────────
