@@ -446,12 +446,18 @@ class LogicEngine:
             return []
 
         # Build a FILTERED detected-holes set: only holes that are expected
-        # outputs of the current rule (ignore everything else)
-        current_step = self.get_current_guided_step()
+        # outputs of the current rule (ignore everything else). Use the full rule's
+        # expected_outputs so compound faces (e.g. C_F) accept detection on any candidate face.
         expected_output_keys: Set[str] = set()
-        if current_step:
-            for out in current_step['expected_outputs']:
-                expected_output_keys.add(f"{out['face']}_{out['hole_id']}")
+        for output in rule.get("expected_outputs", []):
+            out_face = output.get("face", "")
+            out_hole = output.get("hole_id", "")
+            candidates = parse_face_to_faces(out_face)
+            if candidates:
+                for f in candidates:
+                    expected_output_keys.add(f"{f}_{out_hole}")
+            else:
+                expected_output_keys.add(f"{out_face}_{out_hole}")
 
         all_detected = self.global_state.get_detected_holes()
         # Only keep detections that are expected outputs for this rule
@@ -472,11 +478,12 @@ class LogicEngine:
         )
         
         logic = rule.get('logic', 'AND')
+        # AND: all mandatory outputs must be present; optional (mandatory: false) may be absent.
         if logic == 'AND':
-            outputs_valid = (len(missing_keys) == 0 and len(detected_keys) == len(expected_keys))
+            outputs_valid = len(missing_keys) == 0
         else:  # OR
             outputs_valid = len(detected_keys) > 0
-            
+
         # Signal is valid if outputs are detected. Input state is ignored.
         signal_valid = outputs_valid
 
@@ -596,8 +603,7 @@ class LogicEngine:
                     )
                     logic = rule.get('logic', 'AND')
                     if logic == 'AND':
-                        passed = (len(missing_keys) == 0 and
-                                  len(detected_keys) == len(expected_keys))
+                        passed = len(missing_keys) == 0
                     else:
                         passed = len(detected_keys) > 0
 

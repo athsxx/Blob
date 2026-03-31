@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+from functools import partial
 from typing import Any, Dict, List, Optional
 
 from PyQt6.QtWidgets import (
@@ -24,7 +25,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from config_loader import (
     load_manifold_registry_entries,
@@ -36,6 +37,47 @@ from config_loader import (
 )
 
 EMPTY_ROIS: Dict[str, Any] = {"circles": []}
+
+
+class _ManifoldDiskWorker(QThread):
+    """Create manifold folder, ROI stubs, and registry entry off the GUI thread."""
+
+    succeeded = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        config_dir: str,
+        display: str,
+        folder_id: str,
+        template: str,
+        face_basenames: Dict[str, str],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._config_dir = config_dir
+        self._display = display
+        self._folder_id = folder_id
+        self._template = template
+        self._face_basenames = dict(face_basenames)
+
+    def run(self) -> None:
+        try:
+            dest_dir = os.path.join(self._config_dir, self._folder_id)
+            os.makedirs(dest_dir, exist_ok=True)
+            src_rules = os.path.join(self._config_dir, self._template, "connectivity_rules.json")
+            shutil.copy2(src_rules, os.path.join(dest_dir, "connectivity_rules.json"))
+            for _face, base in self._face_basenames.items():
+                p = os.path.join(dest_dir, base)
+                if not os.path.isfile(p):
+                    with open(p, "w", encoding="utf-8") as f:
+                        json.dump(EMPTY_ROIS, f, indent=2)
+            entries = load_manifold_registry_entries(self._config_dir)
+            entries.append({"label": self._display, "folder": self._folder_id})
+            save_manifold_registry_entries(self._config_dir, entries)
+            self.succeeded.emit()
+        except OSError as e:
+            self.failed.emit(str(e))
 
 
 class AddManifoldDialog(QDialog):
@@ -59,6 +101,7 @@ class AddManifoldDialog(QDialog):
         self._cameras_file = os.path.abspath(cameras_file)
         self.created_label: Optional[str] = None
         self._created_folder: Optional[str] = None
+        self._disk_worker: Optional[_ManifoldDiskWorker] = None
 
         self.setWindowTitle("Add manifold")
         self.resize(560, 520)
@@ -199,24 +242,38 @@ class AddManifoldDialog(QDialog):
             QMessageBox.critical(self, "Add manifold", f"Missing template rules:\n{src_rules}")
             return
 
-        try:
-            os.makedirs(dest_dir, exist_ok=True)
-            shutil.copy2(src_rules, os.path.join(dest_dir, "connectivity_rules.json"))
-            for face in "ABCDEF":
-                cam = self._face_rows[face]["cam"]
-                if not cam:
-                    continue
-                base = os.path.basename(str(cam.get("config", f"hole_positions_cam{cam.get('usb_index', 0)}.json")))
-                p = os.path.join(dest_dir, base)
-                if not os.path.isfile(p):
-                    with open(p, "w", encoding="utf-8") as f:
-                        json.dump(EMPTY_ROIS, f, indent=2)
-            entries.append({"label": display, "folder": folder_id})
-            save_manifold_registry_entries(self._config_dir, entries)
-        except OSError as e:
-            QMessageBox.critical(self, "Add manifold", str(e))
+        if self._disk_worker is not None and self._disk_worker.isRunning():
             return
 
+        face_basenames: Dict[str, str] = {}
+        for face in "ABCDEF":
+            cam = self._face_rows[face]["cam"]
+            if not cam:
+                continue
+            base = os.path.basename(
+                str(cam.get("config", f"hole_positions_cam{cam.get('usb_index', 0)}.json"))
+            )
+            face_basenames[face] = base
+
+        self.btn_create.setEnabled(False)
+        self.status_lbl.setText("Creating folder and files…")
+
+        self._disk_worker = _ManifoldDiskWorker(
+            self._config_dir,
+            display,
+            folder_id,
+            template,
+            face_basenames,
+            self,
+        )
+        self._disk_worker.succeeded.connect(
+            partial(self._on_create_disk_done, display, folder_id)
+        )
+        self._disk_worker.failed.connect(self._on_create_disk_failed)
+        self._disk_worker.finished.connect(self._disk_worker.deleteLater)
+        self._disk_worker.start()
+
+    def _on_create_disk_done(self, display: str, folder_id: str) -> None:
         self._created_folder = folder_id
         self.created_label = display
         for face in "ABCDEF":
@@ -227,11 +284,20 @@ class AddManifoldDialog(QDialog):
         self.status_lbl.setText(
             f"Created config/{folder_id}/. Registry updated. Calibrate each face; press 's' in the tool to save ROIs."
         )
+        self._disk_worker = None
         QMessageBox.information(
             self,
             "Manifold created",
             f"{display}\n\nFolder: config/{folder_id}/\n\nSelect it in the manifold list after closing this dialog.",
         )
+
+    def _on_create_disk_failed(self, message: str) -> None:
+        self.btn_create.setEnabled(True)
+        self.status_lbl.setText(
+            "After creation, use Calibrate per face (USB indices match cameras.json)."
+        )
+        self._disk_worker = None
+        QMessageBox.critical(self, "Add manifold", message)
 
     def _on_calibrate_face(self, face: str):
         if not self._created_folder:

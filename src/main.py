@@ -63,8 +63,8 @@ def main():
         print(f"[ERROR] Config directory does not exist or is not a folder:\n  {args.config_dir}")
         return
 
-    # Initialize Logger
-    logger = get_logger()
+    # Initialize Logger (always under project root, not CWD)
+    logger = get_logger(os.path.join(project_root, "logs"))
     logger.log_system("INFO", "System starting up...")
 
     print("=" * 60)
@@ -152,10 +152,10 @@ def main():
     # Rules + ROI folder from manifolds_registry.json (label → config subfolder)
     cfg_folder = manifold_folder_for_label(selected_manifold, args.config_dir) or "DALIA"
     rule_file = os.path.normpath(
-        os.path.join(project_root, "config", cfg_folder, "connectivity_rules.json")
+        os.path.join(args.config_dir, cfg_folder, "connectivity_rules.json")
     )
 
-    ok_rules, rules_path_report = connectivity_rules_path_ok(project_root, cfg_folder)
+    ok_rules, rules_path_report = connectivity_rules_path_ok(args.config_dir, cfg_folder)
     if not ok_rules:
         msg = (
             f"Invalid or missing connectivity rules for manifold {selected_manifold!r} "

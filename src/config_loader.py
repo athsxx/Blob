@@ -159,13 +159,13 @@ def validate_enabled_cameras(cameras: List[Dict[str, Any]]) -> List[str]:
     return errors
 
 
-def connectivity_rules_path_ok(project_root: str, config_subfolder: str) -> tuple:
+def connectivity_rules_path_ok(config_dir: str, config_subfolder: str) -> tuple:
     """
-    Return (True, path) if rules file exists and contains a non-empty 'rules' list.
+    Return (True, path) if rules file exists under config_dir and contains a non-empty 'rules' list.
     Otherwise (False, path_or_expected).
     """
     path = os.path.normpath(
-        os.path.join(project_root, CONFIG_DIR, config_subfolder, RULES_FILE)
+        os.path.join(os.path.abspath(config_dir), config_subfolder, RULES_FILE)
     )
     if not os.path.isfile(path):
         return False, path

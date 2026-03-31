@@ -8,7 +8,6 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from PyQt6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -23,7 +22,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from config_loader import manifold_data_subdirectory
 
@@ -50,6 +49,15 @@ def scan_camera_indices() -> List[tuple]:
     return out
 
 
+class _CameraIndexScanThread(QThread):
+    """Runs scan_camera_indices off the GUI thread."""
+
+    scan_done = pyqtSignal(list)
+
+    def run(self) -> None:
+        self.scan_done.emit(scan_camera_indices())
+
+
 class CameraSetupDialog(QDialog):
     """Edit usb_index and enabled per face; writes cameras.json."""
 
@@ -64,6 +72,7 @@ class CameraSetupDialog(QDialog):
         self._data: Dict[str, Any] = {}
         self._spin_by_face: Dict[str, QSpinBox] = {}
         self._enabled_by_face: Dict[str, QCheckBox] = {}
+        self._scan_thread: Optional[_CameraIndexScanThread] = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 16, 20, 16)
@@ -76,7 +85,7 @@ class CameraSetupDialog(QDialog):
         hint = QLabel(
             "Default layout: Face A → USB 0 + hole_positions_cam0.json, … Face F → USB 5 + hole_positions_cam5.json. "
             "Change USB indices only if your wiring differs. Save writes cameras.json; restart the app so workers reload. "
-            "Use Scan to see which indices open (brief freeze is normal)."
+            "Scan runs in the background so the window stays responsive."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8b949e; font-size: 12px;")
@@ -123,10 +132,10 @@ class CameraSetupDialog(QDialog):
         scroll.setWidget(inner)
         root.addWidget(scroll, stretch=1)
 
-        scan_btn = QPushButton("Scan indices 0–9")
-        scan_btn.setObjectName("btnSetup")
-        scan_btn.clicked.connect(self._on_scan)
-        root.addWidget(scan_btn)
+        self._scan_btn = QPushButton("Scan indices 0–9")
+        self._scan_btn.setObjectName("btnSetup")
+        self._scan_btn.clicked.connect(self._on_scan)
+        root.addWidget(self._scan_btn)
 
         btn_row = QHBoxLayout()
         save_btn = QPushButton("Save")
@@ -141,11 +150,17 @@ class CameraSetupDialog(QDialog):
         root.addLayout(btn_row)
 
     def _on_scan(self):
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            results = scan_camera_indices()
-        finally:
-            QApplication.restoreOverrideCursor()
+        if self._scan_thread is not None and self._scan_thread.isRunning():
+            return
+        self._scan_btn.setEnabled(False)
+        self._scan_thread = _CameraIndexScanThread(self)
+        self._scan_thread.scan_done.connect(self._on_scan_finished)
+        self._scan_thread.finished.connect(self._scan_thread.deleteLater)
+        self._scan_thread.start()
+
+    def _on_scan_finished(self, results: List[tuple]) -> None:
+        self._scan_btn.setEnabled(True)
+        self._scan_thread = None
         lines = [f"  USB {idx}: {'OK' if ok else '—'}" for idx, ok in results]
         QMessageBox.information(
             self,
