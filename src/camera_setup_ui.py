@@ -8,7 +8,6 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from PyQt6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -23,7 +22,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+from config_loader import manifold_data_subdirectory
 
 
 def scan_camera_indices() -> List[tuple]:
@@ -48,6 +49,15 @@ def scan_camera_indices() -> List[tuple]:
     return out
 
 
+class _CameraIndexScanThread(QThread):
+    """Runs scan_camera_indices off the GUI thread."""
+
+    scan_done = pyqtSignal(list)
+
+    def run(self) -> None:
+        self.scan_done.emit(scan_camera_indices())
+
+
 class CameraSetupDialog(QDialog):
     """Edit usb_index and enabled per face; writes cameras.json."""
 
@@ -62,6 +72,7 @@ class CameraSetupDialog(QDialog):
         self._data: Dict[str, Any] = {}
         self._spin_by_face: Dict[str, QSpinBox] = {}
         self._enabled_by_face: Dict[str, QCheckBox] = {}
+        self._scan_thread: Optional[_CameraIndexScanThread] = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 16, 20, 16)
@@ -72,8 +83,9 @@ class CameraSetupDialog(QDialog):
         root.addWidget(title)
 
         hint = QLabel(
-            "Save writes this file on disk. Restart the application so workers pick up changes. "
-            "Use Scan to see which indices open (brief freeze is normal)."
+            "Default layout: Face A → USB 0 + hole_positions_cam0.json, … Face F → USB 5 + hole_positions_cam5.json. "
+            "Change USB indices only if your wiring differs. Save writes cameras.json; restart the app so workers reload. "
+            "Scan runs in the background so the window stays responsive."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8b949e; font-size: 12px;")
@@ -93,7 +105,14 @@ class CameraSetupDialog(QDialog):
             except (json.JSONDecodeError, OSError):
                 self._data = {}
 
-        for cam in self._data.get("cameras", []):
+        face_order = "ABCDEF"
+        cams = list(self._data.get("cameras", []))
+        cams.sort(
+            key=lambda c: face_order.index(c["face"])
+            if c.get("face") in face_order
+            else 99
+        )
+        for cam in cams:
             face = str(cam.get("face", "?"))
             row = QHBoxLayout()
             sp = QSpinBox()
@@ -113,10 +132,10 @@ class CameraSetupDialog(QDialog):
         scroll.setWidget(inner)
         root.addWidget(scroll, stretch=1)
 
-        scan_btn = QPushButton("Scan indices 0–9")
-        scan_btn.setObjectName("btnSetup")
-        scan_btn.clicked.connect(self._on_scan)
-        root.addWidget(scan_btn)
+        self._scan_btn = QPushButton("Scan indices 0–9")
+        self._scan_btn.setObjectName("btnSetup")
+        self._scan_btn.clicked.connect(self._on_scan)
+        root.addWidget(self._scan_btn)
 
         btn_row = QHBoxLayout()
         save_btn = QPushButton("Save")
@@ -131,11 +150,17 @@ class CameraSetupDialog(QDialog):
         root.addLayout(btn_row)
 
     def _on_scan(self):
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            results = scan_camera_indices()
-        finally:
-            QApplication.restoreOverrideCursor()
+        if self._scan_thread is not None and self._scan_thread.isRunning():
+            return
+        self._scan_btn.setEnabled(False)
+        self._scan_thread = _CameraIndexScanThread(self)
+        self._scan_thread.scan_done.connect(self._on_scan_finished)
+        self._scan_thread.finished.connect(self._scan_thread.deleteLater)
+        self._scan_thread.start()
+
+    def _on_scan_finished(self, results: List[tuple]) -> None:
+        self._scan_btn.setEnabled(True)
+        self._scan_thread = None
         lines = [f"  USB {idx}: {'OK' if ok else '—'}" for idx, ok in results]
         QMessageBox.information(
             self,
@@ -174,6 +199,7 @@ class CalibrateRoiDialog(QDialog):
         config_dir: str,
         project_root: str,
         stylesheet: str = "",
+        data_subdir: Optional[str] = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -181,6 +207,9 @@ class CalibrateRoiDialog(QDialog):
         self._manifold = manifold or "DALIA"
         self._config_dir = config_dir
         self._project_root = project_root
+        self._data_subdir = data_subdir or manifold_data_subdirectory(
+            self._manifold, self._config_dir
+        )
 
         self.setWindowTitle("Calibrate ROIs")
         if stylesheet:
@@ -192,18 +221,29 @@ class CalibrateRoiDialog(QDialog):
         layout.addWidget(QLabel("Face to calibrate (opens OpenCV window; close it when done):"))
 
         self.combo = QComboBox()
-        for cam in cameras:
-            if not cam.get("enabled", True):
-                continue
+        face_order = "ABCDEF"
+        ordered = sorted(
+            cameras,
+            key=lambda c: face_order.index(c["face"])
+            if c.get("face") in face_order
+            else 99,
+        )
+        for cam in ordered:
             face = cam.get("face")
+            if face is None:
+                continue
             usb = cam.get("usb_index")
-            if face is not None:
-                self.combo.addItem(f"Face {face}  (USB {usb})", userData=face)
+            en = cam.get("enabled", True)
+            suffix = "" if en else " — disabled"
+            self.combo.addItem(f"Face {face}  (USB {usb}){suffix}", userData=face)
         layout.addWidget(self.combo)
 
-        layout.addWidget(
-            QLabel(f"Manifold: {self._manifold} — saves under config/{self._manifold}/")
+        roi_hint = QLabel(
+            f"Manifold: {self._manifold} — ROI files: config/{self._data_subdir}/hole_positions_camN.json "
+            f"(N = USB index). Values on disk stay the same until you save in the calibration tool."
         )
+        roi_hint.setWordWrap(True)
+        layout.addWidget(roi_hint)
 
         bb = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -223,7 +263,7 @@ class CalibrateRoiDialog(QDialog):
             return
         usb = int(cam.get("usb_index", 0))
         base = os.path.basename(cam.get("config", "hole_positions_cam0.json"))
-        roi_path = os.path.normpath(os.path.join(self._config_dir, self._manifold, base))
+        roi_path = os.path.normpath(os.path.join(self._config_dir, self._data_subdir, base))
         cal_script = os.path.join(self._project_root, "calibrate.py")
         if not os.path.isfile(cal_script):
             QMessageBox.critical(self, "Calibrate", f"Missing:\n{cal_script}")

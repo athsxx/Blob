@@ -197,10 +197,7 @@ class StartScreen(QDialog):
         body_layout.addWidget(div)
 
         # Info row at bottom
-        info_lbl = QLabel(
-            "Active Cameras: Face A · Face B · Face C · Face D · Face E   |   "
-            "Face F: Not Available (POC)"
-        )
+        info_lbl = QLabel("Active cameras: Face A · B · C · D · E · F (six USB feeds)")
         info_lbl.setStyleSheet(
             "color: #484f58; font-size: 11px; background-color: transparent;"
         )

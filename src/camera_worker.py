@@ -61,7 +61,6 @@ class CameraWorker:
         self.display_queue = display_queue
         self.capture_settings = capture_settings or {}
         self.hub_id = hub_id
-        self.hub_id = hub_id
         self.open_semaphore = open_semaphore
         self.command_queue = command_queue
         
@@ -372,6 +371,12 @@ class CameraWorker:
                 
         except Exception as e:
             print(f"[CAM_{self.face}] Connection error: {e}")
+            if self.cap is not None:
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                self.cap = None
             return False
     
     def reconnect(self) -> bool:
@@ -564,6 +569,7 @@ class CameraWorker:
                         self.is_connected = False
                         if self.cap:
                             self.cap.release()
+                            self.cap = None
                         continue
             
             self.frame_count += 1
@@ -625,6 +631,7 @@ class CameraWorker:
         # Cleanup
         if self.cap:
             self.cap.release()
+            self.cap = None
         print(f"[CAM_{self.face}] Worker stopped.")
 
 

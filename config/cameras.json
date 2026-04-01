@@ -2,8 +2,8 @@
   "cameras": [
     {
       "usb_index": 0,
-      "face": "C",
-      "config": "hole_positions_cam2.json",
+      "face": "A",
+      "config": "hole_positions_cam0.json",
       "width": 640,
       "height": 480,
       "fps": 30,
@@ -16,7 +16,7 @@
     {
       "usb_index": 1,
       "face": "B",
-      "config": "hole_positions_cam3.json",
+      "config": "hole_positions_cam1.json",
       "width": 640,
       "height": 480,
       "fps": 30,
@@ -28,8 +28,8 @@
     },
     {
       "usb_index": 2,
-      "face": "E",
-      "config": "hole_positions_cam4.json",
+      "face": "C",
+      "config": "hole_positions_cam2.json",
       "width": 640,
       "height": 480,
       "fps": 30,
@@ -42,7 +42,7 @@
     {
       "usb_index": 3,
       "face": "D",
-      "config": "hole_positions_cam1.json",
+      "config": "hole_positions_cam3.json",
       "width": 640,
       "height": 480,
       "fps": 30,
@@ -54,8 +54,8 @@
     },
     {
       "usb_index": 4,
-      "face": "A",
-      "config": "hole_positions_cam0.json",
+      "face": "E",
+      "config": "hole_positions_cam4.json",
       "width": 640,
       "height": 480,
       "fps": 30,
@@ -73,7 +73,7 @@
       "height": 480,
       "fps": 30,
       "backend": "auto",
-      "enabled": false,
+      "enabled": true,
       "target_fps": 30,
       "reject_high_res": false,
       "reject_high_fps": false

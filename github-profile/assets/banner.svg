@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="850" height="240" viewBox="0 0 850 240" role="img" aria-label="Atharv Jaju - athsxx">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d1117"/>
+      <stop offset="50%" style="stop-color:#161b22"/>
+      <stop offset="100%" style="stop-color:#010409"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#58a6ff"/>
+      <stop offset="100%" style="stop-color:#a371f7"/>
+    </linearGradient>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="0.8" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="850" height="240" rx="14" fill="url(#bg)"/>
+  <rect x="2" y="2" width="846" height="236" rx="12" fill="none" stroke="#30363d" stroke-width="1"/>
+  <text x="48" y="72" fill="#8b949e" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" letter-spacing="0.2em">HELLO, I AM</text>
+  <text x="48" y="132" fill="#f0f6fc" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="52" font-weight="700" letter-spacing="-1.5">Atharv Jaju</text>
+  <text x="48" y="172" fill="#58a6ff" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="16" font-weight="500">@athsxx</text>
+  <text x="48" y="204" fill="#6e7681" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="500" letter-spacing="0.08em">PYTHON  |  COMPUTER VISION  |  APPLIED ML  |  PRODUCT</text>
+  <line x1="48" y1="222" x2="802" y2="222" stroke="url(#accent)" stroke-width="2" stroke-linecap="round" opacity="0.85"/>
+  <circle cx="804" cy="58" r="5" fill="#3fb950" filter="url(#soft)"/>
+  <text x="792" y="62" fill="#484f58" font-family="ui-monospace, monospace" font-size="10" text-anchor="end">open to collab</text>
+</svg>

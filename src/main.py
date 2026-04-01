@@ -34,7 +34,13 @@ if sys.platform == "darwin":
 
 import cv2
 
-from config_loader import load_cameras, load_rules
+from config_loader import (
+    load_cameras,
+    manifold_data_subdirectory,
+    manifold_folder_for_label,
+    validate_enabled_cameras,
+    connectivity_rules_path_ok,
+)
 from camera_worker import camera_worker_process
 from dashboard import create_dashboard, HAS_PYQT6
 from logic_engine import LogicEngine
@@ -51,9 +57,14 @@ def main():
     default_config_dir = os.path.join(project_root, 'config')
     parser.add_argument('--config-dir', default=default_config_dir, help='Config directory path')
     args = parser.parse_args()
+    args.config_dir = os.path.abspath(os.path.expanduser(args.config_dir))
 
-    # Initialize Logger
-    logger = get_logger()
+    if not os.path.isdir(args.config_dir):
+        print(f"[ERROR] Config directory does not exist or is not a folder:\n  {args.config_dir}")
+        return
+
+    # Initialize Logger (always under project root, not CWD)
+    logger = get_logger(os.path.join(project_root, "logs"))
     logger.log_system("INFO", "System starting up...")
 
     print("=" * 60)
@@ -70,6 +81,15 @@ def main():
         msg = "[ERROR] No cameras configured. Check config/cameras.json"
         print(msg)
         logger.log_system("ERROR", msg)
+        logger.stop()
+        return
+
+    cam_errors = validate_enabled_cameras(cameras)
+    if cam_errors:
+        for e in cam_errors:
+            print(f"[ERROR] {e}")
+            logger.log_system("ERROR", e)
+        logger.stop()
         return
 
     # Defer Logic Engine initialization until manifold is selected
@@ -107,47 +127,86 @@ def main():
         print("[Main] Waiting for operator to select Mode and Manifold...")
         from PyQt6.QtCore import QEventLoop
         loop = QEventLoop()
-        
+        dashboard.set_setup_event_loop(loop)
+
         def on_manifold_selected(manifold):
             dashboard.selected_manifold = manifold
             loop.quit()  # Break out of the event loop after both are selected
-            
+
         dashboard.sig_manifold_selected.connect(on_manifold_selected)
         loop.exec()  # Run full Qt event loop to ensure UI is responsive
-        
+        dashboard.set_setup_event_loop(None)
+
         inspection_mode = getattr(dashboard, 'selected_mode', None)
         selected_manifold = getattr(dashboard, 'selected_manifold', None)
-        
+
         if not inspection_mode or not selected_manifold:
             print("[Main] Operator closed window before completing setup. Exiting.")
+            logger.log_system("INFO", "Setup aborted (window closed or incomplete selection)")
+            logger.stop()
             return
 
     # ── Dynamic Configuration Loading ──
     print(f"\n[Main] Operator Selected: Mode={inspection_mode}, Manifold={selected_manifold}")
     
-    # Map manifold to specific rule files
-    manifold_rules = {
-        "DALIA": "config/DALIA/connectivity_rules.json",
-        "Manifold 2": "config/DALIA/connectivity_rules.json", # Default fallback for POC
-        "Manifold 3": "config/DALIA/connectivity_rules.json"  # Default fallback for POC
-    }
-    
-    rule_rel = manifold_rules.get(selected_manifold, "config/DALIA/connectivity_rules.json")
-    rule_file = os.path.normpath(os.path.join(project_root, rule_rel))
-    
+    # Rules + ROI folder from manifolds_registry.json (label → config subfolder)
+    cfg_folder = manifold_folder_for_label(selected_manifold, args.config_dir) or "DALIA"
+    rule_file = os.path.normpath(
+        os.path.join(args.config_dir, cfg_folder, "connectivity_rules.json")
+    )
+
+    ok_rules, rules_path_report = connectivity_rules_path_ok(args.config_dir, cfg_folder)
+    if not ok_rules:
+        msg = (
+            f"Invalid or missing connectivity rules for manifold {selected_manifold!r} "
+            f"(folder {cfg_folder!r}).\nExpected a non-empty 'rules' array in:\n  {rules_path_report}"
+        )
+        print(f"[ERROR] {msg}")
+        logger.log_system("ERROR", msg)
+        if qt_app and dashboard:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                dashboard,
+                "Configuration error",
+                msg,
+            )
+        logger.stop()
+        return
+
     # Initialize Logic Engine dynamically
     engine = LogicEngine(rule_file)
     total_rules = len(engine.rules)
+    if total_rules == 0:
+        msg = f"Rules file loaded but contains 0 rules:\n  {rule_file}"
+        print(f"[ERROR] {msg}")
+        logger.log_system("ERROR", msg)
+        if qt_app and dashboard:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(dashboard, "Configuration error", msg)
+        logger.stop()
+        return
+
     print(f"[Main] Logic Engine initialized with {total_rules} rules for {selected_manifold}.")
     logger.log_system("INFO", f"Logic Engine initialized with {total_rules} rules for {selected_manifold}")
     
-    # Update camera configs based on Manifold (if they had specific folders, we'd inject it here)
+    # Resolve ROI JSON folder (Manifold 2/3 share DALIA on disk until separate trees exist)
+    roi_subdir = manifold_data_subdirectory(selected_manifold, args.config_dir)
     print("\nCamera → Face Mapping:")
     for cam in cameras:
         status = "✓" if cam.get('enabled', True) else "✗"
         if selected_manifold:
-            cam['config'] = f"config/{selected_manifold}/{os.path.basename(cam['config'])}"
+            cam['config'] = f"config/{roi_subdir}/{os.path.basename(cam['config'])}"
         print(f"  [{status}] USB {cam['usb_index']} → Face {cam['face']} → {cam['config']}")
+        cfg_rel = cam["config"]
+        abs_roi = (
+            cfg_rel
+            if os.path.isabs(cfg_rel)
+            else os.path.abspath(os.path.join(os.path.dirname(cameras_file), "..", cfg_rel))
+        )
+        if not os.path.isfile(abs_roi):
+            w = f"ROI file missing for Face {cam['face']}: {abs_roi}"
+            print(f"  [WARN] {w}")
+            logger.log_system("WARN", w)
     print()
 
     # Pass the total rules to dashboard now that we know them
@@ -157,7 +216,7 @@ def main():
 
     # ── Build guided sequence (Sequential or manual/custom single rule) ──
     guided_sequence = []
-    available_faces = {'A', 'B', 'C', 'D', 'E'}  # Face F excluded (no camera)
+    available_faces = {'A', 'B', 'C', 'D', 'E', 'F'}
     custom_rule_id = getattr(dashboard, "custom_rule_id", None) if dashboard else None
 
     if inspection_mode == "sequential":
@@ -165,7 +224,14 @@ def main():
         engine.guided_mode = True
         if guided_sequence:
             engine.set_guided_step(0)
-        print(f"[Main] Guided sequence: {len(guided_sequence)} steps (Face F output rules excluded)")
+        print(f"[Main] Guided sequence: {len(guided_sequence)} steps (all six faces)")
+        if not guided_sequence and total_rules > 0:
+            w = (
+                "Sequential mode: no guided steps after filtering (check cameras vs rule outputs). "
+                "Inspection START will not advance steps — use manual/reactive flow or fix rules."
+            )
+            print(f"[WARN] {w}")
+            logger.log_system("WARN", w)
 
     elif inspection_mode == "custom":
         if custom_rule_id:
@@ -319,12 +385,16 @@ def main():
                     logger.log_system("INFO", f"Step {step_idx + 1} timed out (60s)")
 
                     # Use override mechanism to record a formal FAIL result
-                    eval_result = engine.add_override(rule_id, "FAIL")
-                    if eval_result:
-                        logger.log_inspection(eval_result.to_dict())
-                        dashboard.update_result(eval_result.to_dict())
+                    if rule_id:
+                        eval_result = engine.add_override(rule_id, "FAIL")
+                        if eval_result:
+                            logger.log_inspection(eval_result.to_dict())
+                            dashboard.update_result(eval_result.to_dict())
+                    else:
+                        logger.log_system("WARN", "Step timeout but no active rule id — skip override")
 
-                    dashboard.update_step_result(step_idx, passed=False)
+                    if engine._guided_sequence and 0 <= step_idx < len(engine._guided_sequence):
+                        dashboard.update_step_result(step_idx, passed=False)
                     # Advance after 2 seconds
                     def _advance_after_timeout():
                         next_step = engine.advance_guided_step()
@@ -405,7 +475,11 @@ def main():
                     while result_drained < 10: # Strict cap for logic engine
                         result = result_queue.get_nowait()
                         result_drained += 1
-                        evaluations = engine.update_state(result)
+                        try:
+                            evaluations = engine.update_state(result)
+                        except Exception as ex:
+                            logger.log_system("ERROR", f"update_state failed: {ex}")
+                            evaluations = []
 
                         # Update camera health in dashboard
                         cid = result.get('camera_id', '')
@@ -531,7 +605,11 @@ def main():
                 try:
                     while True:
                         result = result_queue.get_nowait()
-                        evaluations = engine.update_state(result)
+                        try:
+                            evaluations = engine.update_state(result)
+                        except Exception as ex:
+                            logger.log_system("ERROR", f"update_state failed: {ex}")
+                            evaluations = []
                         for eval_result in evaluations:
                             logger.log_inspection(eval_result.to_dict())
                             if dashboard:

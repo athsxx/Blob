@@ -178,87 +178,105 @@ class Calibrator:
         return display
 
     def run(self):
-        self.cap = cv2.VideoCapture(self.cam_idx)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        if not self.cap.isOpened():
-            print(f"[ERROR] Cannot open camera {self.cam_idx}")
-            return
-        
-        # Verify resolution
-        actual_w = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-        actual_h = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        print(f"[INFO] Camera {self.cam_idx} resolution: {int(actual_w)}x{int(actual_h)}")
-        
-        self.load_config()
-        ret, self.original_frame = self.cap.read()
-        if not ret:
-            print("[ERROR] Cannot read frame")
-            return
-
+        self.cap = None
         win = "ROI Calibration (Ellipse)"
-        cv2.namedWindow(win)
-        cv2.setMouseCallback(win, self.mouse_callback)
+        try:
+            self.cap = cv2.VideoCapture(self.cam_idx)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            if not self.cap.isOpened():
+                print(f"[ERROR] Cannot open camera {self.cam_idx}")
+                return
 
-        while True:
-            cv2.imshow(win, self.draw_frame())
-            key = cv2.waitKey(20) & 0xFF
-            
-            if self.renaming:
-                if key == 27:
-                    self.renaming = False
-                    self.rename_text = ""
-                elif key == 13 or key == 10:  # Enter (Windows/Linux or Mac)
-                    if self.rename_text and self.selected_idx >= 0:
-                        self.ellipses[self.selected_idx]['name'] = self.rename_text
-                    self.renaming = False
-                    self.rename_text = ""
-                elif key == 8 or key == 127:  # Backspace (Windows/Linux or Mac)
-                    self.rename_text = self.rename_text[:-1]
-                elif 32 <= key <= 126:
-                    self.rename_text += chr(key)
-                continue
-            
-            if key == ord('q') or key == 27:
-                break
-            elif key == ord('s'):
-                self.save_config()
-            elif key == ord('a'):
-                self.ellipses.append({'name': f"H{len(self.ellipses)+1}", 
-                                     'cx': self.mouse_pos[0], 'cy': self.mouse_pos[1],
-                                     'w': 40, 'h': 40, 'angle': 0})
-                self.selected_idx = len(self.ellipses) - 1
-            elif key == ord('d') and self.selected_idx >= 0:
-                del self.ellipses[self.selected_idx]
-                self.selected_idx = -1
-            elif key == ord('c') and self.selected_idx >= 0:
-                e = self.ellipses[self.selected_idx]
-                self.ellipses.append({'name': f"H{len(self.ellipses)+1}",
-                                     'cx': e['cx']+20, 'cy': e['cy']+20,
-                                     'w': e['w'], 'h': e['h'], 'angle': e['angle']})
-                self.selected_idx = len(self.ellipses) - 1
-            elif key == ord('h'):
-                self.show_legend = not self.show_legend
-            elif key == ord('n') and self.selected_idx >= 0:
-                self.renaming = True
-                self.rename_text = ""
-            elif key == ord('+') or key == ord('='):
-                if self.selected_idx >= 0: self.ellipses[self.selected_idx]['w'] += 2
-            elif key == ord('-') or key == ord('_'):
-                if self.selected_idx >= 0: self.ellipses[self.selected_idx]['w'] = max(5, self.ellipses[self.selected_idx]['w'] - 2)
-            elif key == ord(']'):
-                if self.selected_idx >= 0: self.ellipses[self.selected_idx]['h'] += 2
-            elif key == ord('['):
-                if self.selected_idx >= 0: self.ellipses[self.selected_idx]['h'] = max(5, self.ellipses[self.selected_idx]['h'] - 2)
-            elif key == 81 or key == 2:  # LEFT
-                if self.selected_idx >= 0: self.ellipses[self.selected_idx]['angle'] -= 5
-            elif key == 83 or key == 3:  # RIGHT
-                if self.selected_idx >= 0: self.ellipses[self.selected_idx]['angle'] += 5
-            elif key == ord(' '):
-                ret, self.original_frame = self.cap.read()
+            # Verify resolution
+            actual_w = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            actual_h = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            print(f"[INFO] Camera {self.cam_idx} resolution: {int(actual_w)}x{int(actual_h)}")
 
-        self.cap.release()
-        cv2.destroyAllWindows()
+            self.load_config()
+            ret, self.original_frame = self.cap.read()
+            if not ret:
+                print("[ERROR] Cannot read frame")
+                return
+
+            cv2.namedWindow(win)
+            cv2.setMouseCallback(win, self.mouse_callback)
+
+            while True:
+                cv2.imshow(win, self.draw_frame())
+                key = cv2.waitKey(20) & 0xFF
+
+                if self.renaming:
+                    if key == 27:
+                        self.renaming = False
+                        self.rename_text = ""
+                    elif key == 13 or key == 10:  # Enter (Windows/Linux or Mac)
+                        if self.rename_text and self.selected_idx >= 0:
+                            self.ellipses[self.selected_idx]['name'] = self.rename_text
+                        self.renaming = False
+                        self.rename_text = ""
+                    elif key == 8 or key == 127:  # Backspace (Windows/Linux or Mac)
+                        self.rename_text = self.rename_text[:-1]
+                    elif 32 <= key <= 126:
+                        self.rename_text += chr(key)
+                    continue
+
+                if key == ord('q') or key == 27:
+                    break
+                elif key == ord('s'):
+                    self.save_config()
+                elif key == ord('a'):
+                    self.ellipses.append({'name': f"H{len(self.ellipses)+1}",
+                                         'cx': self.mouse_pos[0], 'cy': self.mouse_pos[1],
+                                         'w': 40, 'h': 40, 'angle': 0})
+                    self.selected_idx = len(self.ellipses) - 1
+                elif key == ord('d') and self.selected_idx >= 0:
+                    del self.ellipses[self.selected_idx]
+                    self.selected_idx = -1
+                elif key == ord('c') and self.selected_idx >= 0:
+                    e = self.ellipses[self.selected_idx]
+                    self.ellipses.append({'name': f"H{len(self.ellipses)+1}",
+                                         'cx': e['cx']+20, 'cy': e['cy']+20,
+                                         'w': e['w'], 'h': e['h'], 'angle': e['angle']})
+                    self.selected_idx = len(self.ellipses) - 1
+                elif key == ord('h'):
+                    self.show_legend = not self.show_legend
+                elif key == ord('n') and self.selected_idx >= 0:
+                    self.renaming = True
+                    self.rename_text = ""
+                elif key == ord('+') or key == ord('='):
+                    if self.selected_idx >= 0:
+                        self.ellipses[self.selected_idx]['w'] += 2
+                elif key == ord('-') or key == ord('_'):
+                    if self.selected_idx >= 0:
+                        self.ellipses[self.selected_idx]['w'] = max(
+                            5, self.ellipses[self.selected_idx]['w'] - 2
+                        )
+                elif key == ord(']'):
+                    if self.selected_idx >= 0:
+                        self.ellipses[self.selected_idx]['h'] += 2
+                elif key == ord('['):
+                    if self.selected_idx >= 0:
+                        self.ellipses[self.selected_idx]['h'] = max(
+                            5, self.ellipses[self.selected_idx]['h'] - 2
+                        )
+                elif key == 81 or key == 2:  # LEFT
+                    if self.selected_idx >= 0:
+                        self.ellipses[self.selected_idx]['angle'] -= 5
+                elif key == 83 or key == 3:  # RIGHT
+                    if self.selected_idx >= 0:
+                        self.ellipses[self.selected_idx]['angle'] += 5
+                elif key == ord(' '):
+                    ret, self.original_frame = self.cap.read()
+
+        finally:
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
 
 def resolve_config_from_cameras_json(cam_idx, cameras_json="config/cameras.json"):
     """Look up the per-camera config file from cameras.json.
