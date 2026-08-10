@@ -1,3 +1,8 @@
 opencv-python
 numpy
 PyQt6
+
+# Windows-only: USB port-path fingerprinting for deterministic camera-face mapping
+# Install on Windows: pip install wmi
+# Safe to omit on macOS/Linux (camera_indexer.py degrades gracefully without it)
+wmi; sys_platform == "win32"

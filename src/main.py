@@ -42,6 +42,7 @@ from config_loader import (
     connectivity_rules_path_ok,
 )
 from camera_worker import camera_worker_process
+from camera_indexer import resolve_camera_indices, check_port_map_exists
 from dashboard import create_dashboard, HAS_PYQT6
 from logic_engine import LogicEngine
 from logger import get_logger
@@ -52,6 +53,13 @@ def main():
     parser = argparse.ArgumentParser(description='Multi-Camera Manifold Inspection')
     parser.add_argument('--no-display', action='store_true', help='Run without preview')
     parser.add_argument('--cv', action='store_true', help='Force OpenCV dashboard (no PyQt6)')
+    parser.add_argument(
+        '--skip-indexing', action='store_true',
+        help=(
+            'Skip USB port-path camera index resolution and use cameras.json usb_index as-is. '
+            'Use ONLY for development/testing. In production always run the assignment wizard first.'
+        )
+    )
     # Resolve config dir relative to project root (parent of src/)
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     default_config_dir = os.path.join(project_root, 'config')
@@ -91,6 +99,34 @@ def main():
             logger.log_system("ERROR", e)
         logger.stop()
         return
+
+    # ── Deterministic Camera Index Resolution (Windows: USB port-path fingerprinting) ──
+    # On Windows, usb_index values assigned by the OS can shift after reboots.
+    # resolve_camera_indices() corrects each camera's usb_index using the stable
+    # physical USB port path saved by tools/assign_camera_faces.py.
+    # On non-Windows platforms this is a safe no-op.
+    if args.skip_indexing:
+        print("[Main] --skip-indexing flag set: using cameras.json usb_index values as-is.")
+        print("       WARNING: camera-face mapping may be incorrect after a reboot or USB change.")
+        logger.log_system("WARN", "--skip-indexing: USB port-path resolution bypassed")
+    else:
+        try:
+            cameras = resolve_camera_indices(cameras, args.config_dir)
+        except RuntimeError as e:
+            # Port map missing — block startup and guide operator to wizard
+            print(str(e))
+            logger.log_system(
+                "ERROR",
+                "Startup blocked: camera_port_map.json missing. "
+                "Run: python tools/assign_camera_faces.py"
+            )
+            logger.stop()
+            return
+        except Exception as e:
+            # Unexpected resolver error — warn and fall back rather than crash
+            msg = f"Camera index resolver error: {e}. Falling back to cameras.json indices."
+            print(f"[WARN] {msg}")
+            logger.log_system("WARN", msg)
 
     # Defer Logic Engine initialization until manifold is selected
 
@@ -285,6 +321,13 @@ def main():
         }]
 
         backend = "auto"
+        # CRITICAL (Windows): Force DirectShow backend so the worker opens the camera
+        # at the SAME index resolved by camera_indexer (which uses DShow/WMI order).
+        # MSMF (Media Foundation) enumerates cameras in a DIFFERENT order than DShow,
+        # so letting 'auto' try MSMF first can cause the wrong physical camera to open
+        # even after correct index resolution.
+        if sys.platform == "win32":
+            backend = "dshow"
 
         capture_settings = {
             "backend": backend,
