@@ -313,26 +313,30 @@ def main():
             config_path = os.path.join(os.path.dirname(cameras_file), '..', config_path)
             config_path = os.path.abspath(config_path)
 
-        presets = [{
-            "width": cam.get("width", 640),
-            "height": cam.get("height", 480),
-            "fps": cam.get("fps", 30),
-            "fourcc": "MJPG"
-        }]
+        presets = [
+            {
+                "width": cam.get("width", 640),
+                "height": cam.get("height", 480),
+                "fps": cam.get("fps", 15),
+                # No fourcc — let camera use native format (YUY2).
+                # MJPG causes blue-green color distortion on OV2064 cameras.
+            },
+            {
+                # Fallback: lower resolution for USB bandwidth relief
+                "width": 320,
+                "height": 240,
+                "fps": 15,
+            },
+        ]
 
-        backend = "auto"
-        # CRITICAL (Windows): Force DirectShow backend so the worker opens the camera
-        # at the SAME index resolved by camera_indexer (which uses DShow/WMI order).
-        # MSMF (Media Foundation) enumerates cameras in a DIFFERENT order than DShow,
-        # so letting 'auto' try MSMF first can cause the wrong physical camera to open
-        # even after correct index resolution.
-        if sys.platform == "win32":
-            backend = "dshow"
+        backend = "dshow"  # DirectShow only on Windows — reliable multi-camera indexing
+        if sys.platform != "win32":
+            backend = "auto"
 
         capture_settings = {
             "backend": backend,
             "presets": presets,
-            "warmup_reads": 3,
+            "warmup_reads": 5,
             "robust_mode": True,
             "max_read_retries": 10,
             "target_fps": 15,

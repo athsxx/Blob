@@ -499,6 +499,30 @@ class CameraWidget(QFrame):
         self._fps_lbl.adjustSize()
         self._fps_lbl.move(6, 6 + self._face_lbl.height() + 4)
 
+        # Target hole overlay (shown when this camera is inspecting a specific hole)
+        self._target_lbl = QLabel("", self)
+        self._target_lbl.setStyleSheet(
+            "background-color: rgba(255,215,0,200); color: #0d1117; "
+            "font-weight: 700; font-size: 11px; padding: 4px 10px; border-radius: 4px;"
+        )
+        self._target_lbl.hide()
+
+    def set_target_label(self, hole_id: Optional[str] = None):
+        """Show or hide the target hole indicator on this camera feed."""
+        if hole_id:
+            self._target_lbl.setText(f"→ {hole_id}")
+            self._target_lbl.adjustSize()
+            self._target_lbl.show()
+            self._reposition_target_lbl()
+        else:
+            self._target_lbl.hide()
+
+    def _reposition_target_lbl(self):
+        """Position target label at top-right of the widget."""
+        w = self.width()
+        tw = self._target_lbl.width()
+        self._target_lbl.move(w - tw - 8, 6)
+
     def update_frame(self, frame: np.ndarray):
         w = self.feed_label.width()
         h = self.feed_label.height()
@@ -521,6 +545,8 @@ class CameraWidget(QFrame):
         super().resizeEvent(event)
         self._face_lbl.move(6, 6)
         self._fps_lbl.move(6, 6 + self._face_lbl.height() + 4)
+        if self._target_lbl.isVisible():
+            self._reposition_target_lbl()
 
 
 # ──────────────────────────────────────────────
@@ -588,7 +614,7 @@ class StepListPanel(QFrame):
             icon.setStyleSheet("color: #484f58; font-size: 12px; min-width: 14px;")
             icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            text = QLabel(f"{num:02d}.  Face {face} · {hole}")
+            text = QLabel(f"{num:02d}.  {face} · {hole}")
             text.setStyleSheet("color: #8b949e; font-size: 11px;")
 
             rl.addWidget(icon)
@@ -780,7 +806,7 @@ class InstructionPanel(QFrame):
         outs = step.get('expected_outputs', [])
 
         self.step_lbl.setText(f"STEP  {num}  of  {total_steps}")
-        self.face_hole_lbl.setText(f"Face {face}  ·  {hole}")
+        self.face_hole_lbl.setText(f"{face}  ·  {hole}")
 
         for lbl in self._out_labels:
             self._out_layout.removeWidget(lbl)
@@ -788,7 +814,7 @@ class InstructionPanel(QFrame):
         self._out_labels.clear()
 
         for out in outs:
-            lbl = QLabel(f"● Face {out.get('face','?')}  →  {out.get('hole_id','?')}")
+            lbl = QLabel(f"● {out.get('face','?')}  →  {out.get('hole_id','?')}")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet("color: #c9d1d9; font-size: 13px;")
             self._out_layout.addWidget(lbl)
@@ -1932,6 +1958,29 @@ class DashboardWindow(QMainWindow):
             input_face = step.get('input_face')
             if input_face:
                 self.set_hero_camera(input_face)
+            
+            # Update target labels on camera widgets
+            input_hole = step.get('input_hole', '')
+            expected_outputs = step.get('expected_outputs', [])
+            
+            # Clear all target labels first
+            for cw in self.camera_widgets.values():
+                cw.set_target_label(None)
+            
+            # Set target on input face camera
+            if input_face and input_hole:
+                input_cw = self.camera_widgets.get(f"CAM_{input_face}")
+                if input_cw:
+                    input_cw.set_target_label(f"INSERT → {input_hole}")
+            
+            # Set expected output targets on their cameras
+            for out in expected_outputs:
+                out_face = out.get('face', '')
+                out_hole = out.get('hole_id', '')
+                if out_face and out_hole:
+                    out_cw = self.camera_widgets.get(f"CAM_{out_face}")
+                    if out_cw:
+                        out_cw.set_target_label(f"EXPECT → {out_hole}")
 
     def update_step_result(self, step_index: int, passed: bool):
         if step_index < 0 or not self._guided_sequence or step_index >= len(self._guided_sequence):

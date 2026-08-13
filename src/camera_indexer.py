@@ -446,6 +446,39 @@ def resolve_camera_indices(
         save_port_map(config_dir, entries)
         print("[CameraIndexer] Port map cache updated on disk.")
 
+    # ── Detect and resolve duplicate USB indices ────────────────────────────
+    # If two faces resolved to the same usb_index, the second worker will fail
+    # to open the camera (exclusive access on Windows/DirectShow).
+    index_to_faces: Dict[int, List[Dict[str, Any]]] = {}
+    for cam in cameras:
+        if not cam.get('enabled', True):
+            continue
+        idx = cam.get('usb_index', -1)
+        if idx not in index_to_faces:
+            index_to_faces[idx] = []
+        index_to_faces[idx].append(cam)
+
+    for idx, face_cams in index_to_faces.items():
+        if len(face_cams) <= 1:
+            continue
+        # Duplicate detected — disable the face(s) that have no port map entry
+        faces_str = ", ".join(str(c.get("face", "?")) for c in face_cams)
+        print(
+            f"\n[CameraIndexer] *** DUPLICATE USB INDEX {idx} ***"
+            f"  Faces sharing this index: {faces_str}"
+        )
+        for cam in face_cams:
+            face = str(cam.get("face", "?")).upper()
+            entry = port_map_by_face.get(face)
+            if not entry:
+                # This face has no port map entry — it's the fallback one
+                cam["enabled"] = False
+                print(
+                    f"[CameraIndexer] DISABLED Face {face} (no port map entry, "
+                    f"was using fallback index {idx} which conflicts with another face). "
+                    f"Re-run: python tools/assign_camera_faces.py"
+                )
+
     # ── Print final resolved mapping ─────────────────────────────────────────
     print()
     print("[CameraIndexer] ── Final Resolved Face -> USB Index Mapping ──────────")
@@ -455,7 +488,7 @@ def resolve_camera_indices(
         face = str(cam.get("face", "?")).upper()
         idx = cam.get("usb_index", "?")
         enabled = cam.get("enabled", True)
-        status = "enabled" if enabled else "disabled"
+        status = "enabled" if enabled else "DISABLED"
         entry = port_map_by_face.get(face, {})
         port = entry.get("port_path", "(no entry in port map)")
         print(f"  {face:<6} {str(idx):<5} {status:<10} {port}")

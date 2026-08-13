@@ -83,7 +83,7 @@ class CameraWorker:
         self.frame_interval = 1.0 / self.target_fps if self.target_fps > 0 else 0
         self.last_process_time = 0
         # Display throttling - separate from processing throttle
-        self.display_fps = 30  # Max 30fps for smooth display without queue overflow
+        self.display_fps = 15  # 15fps display to reduce IPC queue pressure (6 cameras)
         self.display_interval = 1.0 / self.display_fps
         self.last_display_time = 0
         # Detection settings
@@ -494,6 +494,8 @@ class CameraWorker:
             h = roi.get('h', roi.get('radius', 20))
             angle = roi.get('angle', 0)
             
+            is_target = (self.target_hole_id == hole_id)
+            
             # Determine status/color
             det = det_map.get(hole_id)
             if det:
@@ -501,18 +503,30 @@ class CameraWorker:
                     color = (0, 255, 0)  # Green - stable detection
                 elif det['raw_detection']:
                     color = (0, 255, 255)  # Yellow - detected but unstable
-                elif self.target_hole_id == hole_id:
-                    color = (255, 255, 0)  # Cyan - Target
+                elif is_target:
+                    color = (0, 255, 255)  # Yellow - active target
                 else:
                     color = (0, 0, 255)  # Red - processed but no laser
             else:
-                color = (128, 128, 128)  # Gray - no detection info yet
+                if is_target:
+                    color = (0, 255, 255)  # Yellow - active target
+                else:
+                    color = (128, 128, 128)  # Gray - no detection info yet
+            
+            thickness = 2
+            
+            # Target hole: draw prominent indicator
+            if is_target:
+                thickness = 3
+                # Outer pulsing ring (larger)
+                pulse_r = int(max(w, h) * 1.4)
+                cv2.circle(display, (cx, cy), pulse_r, (0, 255, 255), 1)
             
             # Draw shape
             if w == h:
-                cv2.circle(display, (cx, cy), w, color, 2)
+                cv2.circle(display, (cx, cy), w, color, thickness)
             else:
-                cv2.ellipse(display, (cx, cy), (w, h), angle, 0, 360, color, 2)
+                cv2.ellipse(display, (cx, cy), (w, h), angle, 0, 360, color, thickness)
             
             # Draw label
             label = f"{hole_id}"
@@ -524,6 +538,13 @@ class CameraWorker:
         # Draw camera info
         info = f"CAM_{self.face} | FPS: {self.fps_actual:.1f} | Frame: {self.frame_count}"
         cv2.putText(display, info, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Draw target indicator banner if this camera has the active target
+        if self.target_hole_id:
+            target_text = f"TARGET: {self.target_hole_id}"
+            h_frame = display.shape[0]
+            cv2.putText(display, target_text, (10, h_frame - 15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         
         return display
     
@@ -571,6 +592,13 @@ class CameraWorker:
                             self.cap.release()
                             self.cap = None
                         continue
+            
+            # Color-space safety: ensure frame is 3-channel BGR
+            # Some cameras return grayscale or 4-channel (BGRA) under certain backends
+            if frame is not None and len(frame.shape) == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            elif frame is not None and frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
             
             self.frame_count += 1
             fps_frame_count += 1
