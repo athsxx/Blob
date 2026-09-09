@@ -35,6 +35,8 @@ def scan_camera_indices() -> List[tuple]:
         return []
     if sys.platform == "darwin":
         backend = cv2.CAP_AVFOUNDATION
+    elif sys.platform == "win32":
+        backend = cv2.CAP_DSHOW
     else:
         backend = cv2.CAP_ANY
     out = []

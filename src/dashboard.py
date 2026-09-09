@@ -528,14 +528,18 @@ class CameraWidget(QFrame):
         h = self.feed_label.height()
         if w < 10 or h < 10:
             return
-        rgb = frame[..., ::-1].copy()
-        fh, fw = rgb.shape[:2]
-        qimg = QImage(rgb.data, fw, fh, 3 * fw, QImage.Format.Format_RGB888)
+        fh, fw = frame.shape[:2]
+        if hasattr(QImage.Format, 'Format_BGR888'):
+            if not frame.flags['C_CONTIGUOUS']:
+                frame = np.ascontiguousarray(frame)
+            qimg = QImage(frame.data, fw, fh, 3 * fw, QImage.Format.Format_BGR888)
+        else:
+            rgb = frame[..., ::-1].copy()
+            qimg = QImage(rgb.data, fw, fh, 3 * fw, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(qimg)
         scaled = pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
         self.feed_label.setPixmap(scaled)
-        self.feed_label.setStyleSheet("background-color: transparent; border-radius: 6px;")
 
     def update_stats(self, fps: float, det_count: int):
         self._fps_lbl.setText(f"{fps:.1f} fps")

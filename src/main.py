@@ -133,7 +133,7 @@ def main():
     # ── Multiprocessing setup ──
     ctx = mp.get_context('spawn')
     result_queue = ctx.Queue()
-    display_queue = ctx.Queue() if not args.no_display else None
+    display_queue = ctx.Queue(maxsize=18) if not args.no_display else None
     control_event = ctx.Event()
 
     processes = []
@@ -505,16 +505,20 @@ def main():
 
             def poll_queues():
                 """Called ~60 times/sec by QTimer."""
-                # 1. Drain display queue (always — feeds stay live even when paused)
+                # 1. Drain display queue to latest frame per camera (zero lag, no queue buildup)
                 if display_queue:
+                    latest_frames = {}
                     drained = 0
-                    while drained < 5:  # Strict cap to prevent UI freeze
+                    while drained < 30:  # Drain pending burst up to 30 frames
                         try:
                             camera_id, frame = display_queue.get_nowait()
-                            dashboard.update_frame(camera_id, frame)
+                            latest_frames[camera_id] = frame
                             drained += 1
                         except queue.Empty:
                             break
+
+                    for camera_id, frame in latest_frames.items():
+                        dashboard.update_frame(camera_id, frame)
 
                 # 2. Drain result queue
                 try:
@@ -636,12 +640,16 @@ def main():
         try:
             while True:
                 if dashboard and display_queue:
+                    latest_frames = {}
                     try:
                         while True:
                             camera_id, frame = display_queue.get_nowait()
-                            dashboard.update_frame(camera_id, frame)
+                            latest_frames[camera_id] = frame
                     except queue.Empty:
                         pass
+
+                    for camera_id, frame in latest_frames.items():
+                        dashboard.update_frame(camera_id, frame)
 
                     key = dashboard.show()
                     if key == ord('q'):
