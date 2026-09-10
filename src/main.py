@@ -346,22 +346,24 @@ def main():
             config_path = os.path.join(os.path.dirname(cameras_file), '..', config_path)
             config_path = os.path.abspath(config_path)
 
-        presets = [
-            {
-                "width": cam.get("width", 640),
-                "height": cam.get("height", 480),
-                "fps": cam.get("fps", 15),
-                # MJPG first on Windows so five OV5693 cams fit on an extended hub.
-                **({"fourcc": "MJPG"} if sys.platform == "win32" else {}),
-            },
-            {
-                # Fallback: native/YUY2 at the same (ROI-calibrated) resolution.
-                # Do not fall back to 320x240 — ROI coordinates are in 640x480 space.
-                "width": cam.get("width", 640),
-                "height": cam.get("height", 480),
-                "fps": cam.get("fps", 15),
-            },
-        ]
+        if sys.platform == "win32":
+            # Six OV5693s on one hub cannot sustain MJPG 640×480 @ 15 fps.
+            # Open MJPG 320×240 @ 5 fps first so every face gets a live tile.
+            # ROI files stay in 640×480 space and are scaled in the worker.
+            capture_fps = 5
+            presets = [
+                {"width": 320, "height": 240, "fps": capture_fps, "fourcc": "MJPG"},
+                {"width": 640, "height": 480, "fps": capture_fps, "fourcc": "MJPG"},
+            ]
+        else:
+            capture_fps = float(cam.get("fps", 15) or 15)
+            presets = [
+                {
+                    "width": cam.get("width", 640),
+                    "height": cam.get("height", 480),
+                    "fps": capture_fps,
+                },
+            ]
 
         backend = "dshow"
         if sys.platform != "win32":
@@ -372,13 +374,16 @@ def main():
             # Do not fall through to MSMF: its index order can differ from DSHOW / the port map.
             "allow_backend_fallback": False,
             "presets": presets,
-            "warmup_reads": 16 if sys.platform == "win32" else 5,
-            "open_settle_s": 1.5 if sys.platform == "win32" else 1.0,
+            "warmup_reads": 20 if sys.platform == "win32" else 5,
+            "open_settle_s": 0.8 if sys.platform == "win32" else 1.0,
             "robust_mode": True,
             "max_read_retries": 10,
             "max_reconnect_attempts": 8,
-            "min_width": int(cam.get("width", 640)),
-            "target_fps": 15,
+            "min_width": 0,
+            "target_fps": capture_fps,
+            "display_fps": capture_fps,
+            "roi_calib_width": int(cam.get("width", 640)),
+            "roi_calib_height": int(cam.get("height", 480)),
             "reject_high_res": False,
             "reject_high_fps": False,
         }
@@ -417,7 +422,9 @@ def main():
         logger.log_system("INFO", msg)
 
         # Handshake: wait for first connect result before opening the next camera.
-        ready_timeout_s = 25.0
+        # Windows opens can spend a long time cycling formats; do not start the
+        # next worker while this one is still inside connect().
+        ready_timeout_s = 90.0 if sys.platform == "win32" else 25.0
         deadline = time.time() + ready_timeout_s
         got_ready = False
         while time.time() < deadline:

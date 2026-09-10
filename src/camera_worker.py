@@ -31,18 +31,18 @@ GREEN_LASER_SETTINGS = {
     'dominance_ratio': 1.3,
 }
 
-# MJPG on some OV5693 units "opens" but returns an all-black buffer. Mean
-# luminance below this is treated as a failed format, not a live feed.
-_MIN_LIVE_MEAN = 8.0
+# Only treat a buffer as dead if it is essentially all zeros (USB underrun).
+# Dim metal in workshop light often has mean < 8 and must still be shown.
+_DEAD_FRAME_MAX = 1.5
 
 
-def _frame_has_image(frame: Optional[np.ndarray]) -> bool:
+def _frame_is_dead(frame: Optional[np.ndarray]) -> bool:
     if frame is None or getattr(frame, "size", 0) == 0:
-        return False
+        return True
     try:
-        return float(np.mean(frame)) >= _MIN_LIVE_MEAN
+        return float(np.max(frame)) < _DEAD_FRAME_MAX
     except Exception:
-        return False
+        return True
 
 
 class CameraWorker:
@@ -87,7 +87,6 @@ class CameraWorker:
         self.reconnect_attempts = 0
         self._gave_up = False
         self._ready_emitted = False
-        self._black_streak = 0
         # Robust mode settings
         self.robust_mode = bool(self.capture_settings.get("robust_mode", False))
         self.max_read_retries = int(self.capture_settings.get("max_read_retries", 3))
@@ -102,10 +101,14 @@ class CameraWorker:
         self.reject_high_fps = bool(self.capture_settings.get("reject_high_fps", False))
         self.frame_interval = 1.0 / self.target_fps if self.target_fps > 0 else 0
         self.last_process_time = 0
-        # Display throttling - separate from processing throttle
-        self.display_fps = 15  # 15fps display to reduce IPC queue pressure (6 cameras)
-        self.display_interval = 1.0 / self.display_fps
+        self.display_fps = float(self.capture_settings.get("display_fps", self.target_fps or 5))
+        self.display_interval = 1.0 / self.display_fps if self.display_fps > 0 else 0
         self.last_display_time = 0
+        self._roi_scale = (1.0, 1.0)
+        self._roi_calib = (
+            int(self.capture_settings.get("roi_calib_width", 640)),
+            int(self.capture_settings.get("roi_calib_height", 480)),
+        )
         # Detection settings
         self.detection_settings = dict(GREEN_LASER_SETTINGS)
         # Pre-computed HSV bounds (set once, reuse every frame)
@@ -120,7 +123,10 @@ class CameraWorker:
         self._frame_size: Optional[Tuple[int, int]] = None  # (h, w)
         
         # Display frame size (send compressed frames to reduce IPC overhead)
-        self.display_size = (480, 360)
+        self.display_size = (
+            int(self.capture_settings.get("display_width", 480)),
+            int(self.capture_settings.get("display_height", 360)),
+        )
         self.last_detections = []  # Store last detections for display overlay
         
         # Health metrics
@@ -183,31 +189,44 @@ class CameraWorker:
             print(f"[CAM_{self.face}] Error loading config: {e}")
             return False
 
+    def _scaled_roi(self, roi: Dict[str, Any]) -> Tuple[int, int, int, int, float]:
+        sx, sy = self._roi_scale
+        cx = int(round(roi["cx"] * sx))
+        cy = int(round(roi["cy"] * sy))
+        w = max(1, int(round(roi.get("w", roi.get("radius", 20)) * sx)))
+        h = max(1, int(round(roi.get("h", roi.get("radius", 20)) * sy)))
+        return cx, cy, w, h, float(roi.get("angle", 0))
+
     def _build_roi_masks(self, frame_h: int, frame_w: int):
-        """Pre-compute ROI masks once when frame size is known."""
+        """Pre-compute ROI masks once when frame size is known. Scale from 640×480 calibration."""
         self.roi_masks = {}
         self.roi_mask_bools = {}
         self._frame_size = (frame_h, frame_w)
-        
+        calib_w, calib_h = self._roi_calib
+        self._roi_scale = (
+            frame_w / float(calib_w or frame_w),
+            frame_h / float(calib_h or frame_h),
+        )
+
         for roi in self.rois:
             hole_id = roi['hole_id']
-            cx, cy = roi['cx'], roi['cy']
-            radius = roi.get('radius', roi.get('w', 40))
-            roi_w = roi.get('w', radius)
-            roi_h = roi.get('h', radius)
-            angle = roi.get('angle', 0)
-            
+            cx, cy, roi_w, roi_h, angle = self._scaled_roi(roi)
+            radius = max(roi_w, roi_h)
+
             mask = np.zeros((frame_h, frame_w), dtype=np.uint8)
-            if roi_w == roi_h:  # Circle
+            if roi_w == roi_h:
                 cv2.circle(mask, (cx, cy), radius, 255, -1)
-            else:  # Ellipse
+            else:
                 cv2.ellipse(mask, (cx, cy), (roi_w, roi_h), angle, 0, 360, 255, -1)
-            
+
             self.roi_masks[hole_id] = mask
             self.roi_mask_bools[hole_id] = mask > 0
-        
+
         self._masks_built = True
-        print(f"[CAM_{self.face}] Built {len(self.roi_masks)} pre-computed ROI masks ({frame_w}x{frame_h})")
+        print(
+            f"[CAM_{self.face}] Built {len(self.roi_masks)} ROI masks "
+            f"({frame_w}x{frame_h}, scale {self._roi_scale[0]:.2f}x{self._roi_scale[1]:.2f})"
+        )
 
     def detect_green_laser_in_roi(self, green_mask, b_ch, g_ch, r_ch, roi):
         """
@@ -342,23 +361,28 @@ class CameraWorker:
                         actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
-                        # Warmup — Windows UVC often needs several frames before the
-                        # first successful read after format negotiation. MJPG can also
-                        # return an all-black buffer; reject that and try the next preset.
+                        # Warmup — Windows UVC often needs several frames after
+                        # format negotiation. Only skip a preset if every buffer
+                        # is all zeros (USB underrun). Dim metal must still count
+                        # as a live image so we do not fall through to YUY2.
                         live = None
-                        for _ in range(max(warmup_reads, 12)):
+                        saw_zero_buffer = False
+                        for _ in range(max(1, warmup_reads)):
                             ok, frame = cap.read()
                             if not ok or frame is None:
                                 time.sleep(0.08)
                                 continue
-                            if _frame_has_image(frame):
-                                live = frame
-                                break
-                            time.sleep(0.05)
+                            if _frame_is_dead(frame):
+                                saw_zero_buffer = True
+                                time.sleep(0.05)
+                                continue
+                            live = frame
+                            break
                         if live is None:
+                            reason = "all-zero buffers" if saw_zero_buffer else "no frames"
                             print(
                                 f"[CAM_{self.face}] Opened USB {self.usb_index} "
-                                f"({preset.get('fourcc') or 'native'}) but frames are black — trying next format"
+                                f"({preset.get('fourcc') or 'native'}) but {reason} — trying next format"
                             )
                             cap.release()
                             continue
@@ -370,7 +394,7 @@ class CameraWorker:
                         if self.min_width and actual_w and actual_w < self.min_width:
                             print(
                                 f"[CAM_{self.face}] Rejecting {actual_w}x{actual_h} "
-                                f"(need width ≥ {self.min_width} so ROI coordinates stay valid)"
+                                f"(need width ≥ {self.min_width})"
                             )
                             cap.release()
                             continue
@@ -554,10 +578,7 @@ class CameraWorker:
         
         for roi in self.rois:
             hole_id = roi['hole_id']
-            cx, cy = roi['cx'], roi['cy']
-            w = roi.get('w', roi.get('radius', 20))
-            h = roi.get('h', roi.get('radius', 20))
-            angle = roi.get('angle', 0)
+            cx, cy, w, h, angle = self._scaled_roi(roi)
             
             is_target = (self.target_hole_id == hole_id)
             
@@ -670,17 +691,10 @@ class CameraWorker:
             elif frame is not None and frame.shape[2] == 4:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
-            if not _frame_has_image(frame):
-                self._black_streak += 1
-                if self._black_streak >= 20:
-                    print(f"[CAM_{self.face}] Live frames are black — reconnecting with next format")
-                    self.is_connected = False
-                    self._black_streak = 0
-                    if self.cap:
-                        self.cap.release()
-                        self.cap = None
+            # Drop USB underrun buffers without tearing down the stream.
+            # Reconnecting here saturates the hub and knocks later cameras offline.
+            if _frame_is_dead(frame):
                 continue
-            self._black_streak = 0
             
             self.frame_count += 1
             fps_frame_count += 1
@@ -704,10 +718,15 @@ class CameraWorker:
             if self.display_queue:
                 if (now - self.last_display_time) >= self.display_interval:
                     try:
-                        # Draw overlays using the most recent detections
+                        fh, fw = frame.shape[:2]
+                        if not self._masks_built or self._frame_size != (fh, fw):
+                            self._build_roi_masks(fh, fw)
                         display_frame = self.draw_overlays(frame, self.last_detections)
-                        # Send compressed frame to reduce IPC overhead
-                        small = cv2.resize(display_frame, self.display_size)
+                        dw, dh = self.display_size
+                        if display_frame.shape[1] > dw or display_frame.shape[0] > dh:
+                            small = cv2.resize(display_frame, (dw, dh))
+                        else:
+                            small = display_frame
                         self.display_queue.put_nowait((f"CAM_{self.face}", small))
                         self.last_display_time = now
                     except:

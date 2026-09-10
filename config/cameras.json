@@ -6,10 +6,10 @@
       "config": "hole_positions_cam0.json",
       "width": 640,
       "height": 480,
-      "fps": 15,
+      "fps": 5,
       "backend": "dshow",
       "enabled": true,
-      "target_fps": 15,
+      "target_fps": 5,
       "reject_high_res": false,
       "reject_high_fps": false
     },
@@ -19,10 +19,10 @@
       "config": "hole_positions_cam1.json",
       "width": 640,
       "height": 480,
-      "fps": 15,
+      "fps": 5,
       "backend": "dshow",
       "enabled": true,
-      "target_fps": 15,
+      "target_fps": 5,
       "reject_high_res": false,
       "reject_high_fps": false
     },
@@ -32,10 +32,10 @@
       "config": "hole_positions_cam2.json",
       "width": 640,
       "height": 480,
-      "fps": 15,
+      "fps": 5,
       "backend": "dshow",
       "enabled": true,
-      "target_fps": 15,
+      "target_fps": 5,
       "reject_high_res": false,
       "reject_high_fps": false
     },
@@ -45,10 +45,10 @@
       "config": "hole_positions_cam3.json",
       "width": 640,
       "height": 480,
-      "fps": 15,
+      "fps": 5,
       "backend": "dshow",
       "enabled": true,
-      "target_fps": 15,
+      "target_fps": 5,
       "reject_high_res": false,
       "reject_high_fps": false
     },
@@ -58,10 +58,10 @@
       "config": "hole_positions_cam4.json",
       "width": 640,
       "height": 480,
-      "fps": 15,
+      "fps": 5,
       "backend": "dshow",
       "enabled": true,
-      "target_fps": 15,
+      "target_fps": 5,
       "reject_high_res": false,
       "reject_high_fps": false
     },
@@ -71,10 +71,10 @@
       "config": "hole_positions_cam5.json",
       "width": 640,
       "height": 480,
-      "fps": 15,
+      "fps": 5,
       "backend": "dshow",
       "enabled": true,
-      "target_fps": 15,
+      "target_fps": 5,
       "reject_high_res": false,
       "reject_high_fps": false
     }
@@ -85,7 +85,7 @@
       640,
       480
     ],
-    "fps": 15,
-    "windows_note": "On Windows, workers open with MJPG@640x480 first to fit multiple cameras on an extended USB hub. YUY2/native is tried only as fallback."
+    "fps": 5,
+    "windows_note": "On Windows, workers open MJPG 320x240 @ 5 fps first so all six cameras can share one USB hub. MJPG 640x480 @ 5 fps is the only fallback. Uncompressed YUY2 is not used. ROI files stay calibrated at 640x480 and are scaled to the live frame."
   }
 }
