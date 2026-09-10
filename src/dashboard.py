@@ -509,6 +509,21 @@ class CameraWidget(QFrame):
         )
         self._target_lbl.hide()
 
+    def set_usb_index(self, usb_index: Optional[int], assigned: bool = True) -> None:
+        """Refresh the Face/USB chrome after assignment (labels are stale if set only at init)."""
+        if not assigned:
+            text = f"Face {self.face} · not assigned"
+        elif usb_index is not None:
+            text = f"USB {usb_index} · Face {self.face}"
+        else:
+            text = f"Face {self.face}"
+        self._face_lbl.setText(text)
+        self._face_lbl.adjustSize()
+        if not assigned:
+            self.feed_label.setText(f"{text}\nNO CAMERA")
+            self._fps_lbl.setText("—")
+            self._fps_lbl.adjustSize()
+
     def set_target_label(self, hole_id: Optional[str] = None):
         """Show or hide the target hole indicator on this camera feed."""
         if hole_id:
@@ -1850,10 +1865,19 @@ class DashboardWindow(QMainWindow):
     def apply_resolved_cameras(self, cameras: List[Dict[str, Any]]) -> None:
         """Apply indexer output (usb_index / enabled) to dashboard labels and layout."""
         self._cameras_list = list(cameras)
+        enabled_set = set()
         for c in cameras:
             face = str(c.get("face", "")).upper()
-            if face and c.get("usb_index") is not None:
+            if not face:
+                continue
+            if c.get("usb_index") is not None:
                 self._face_to_index[face] = int(c["usb_index"])
+            if c.get("enabled", True):
+                enabled_set.add(face)
+        for face in ["A", "B", "C", "D", "E", "F"]:
+            cw = self.camera_widgets.get(f"CAM_{face}")
+            if cw:
+                cw.set_usb_index(self._face_to_index.get(face), assigned=face in enabled_set)
         enabled = self.enabled_faces()
         if enabled:
             self.set_hero_camera(self._current_hero if self._current_hero in enabled else enabled[0])
@@ -1981,44 +2005,35 @@ class DashboardWindow(QMainWindow):
         if not target_cam:
             return
 
-        if self._current_hero == face_id:
-            # Still refresh thumbnail visibility if the enabled set changed.
-            pass
-        else:
-            if self._current_hero:
-                prev_cam = self.camera_widgets.get(f"CAM_{self._current_hero}")
-                if prev_cam:
-                    self.hero_layout.removeWidget(prev_cam)
-                    prev_cam.setParent(None)
+        if self._current_hero:
+            prev_cam = self.camera_widgets.get(f"CAM_{self._current_hero}")
+            if prev_cam:
+                self.hero_layout.removeWidget(prev_cam)
+                prev_cam.setParent(None)
 
-            while self.hero_layout.count():
-                item = self.hero_layout.takeAt(0)
-                if item.widget():
-                    item.widget().setParent(None)
+        while self.hero_layout.count():
+            item = self.hero_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
 
         while self.thumb_layout.count():
             item = self.thumb_layout.takeAt(0)
             if item.widget():
                 item.widget().setParent(None)
 
-        for f in ["A", "B", "C", "D", "E", "F"]:
+        all_faces = ["A", "B", "C", "D", "E", "F"]
+        thumb_faces = [f for f in visible if f != face_id]
+        thumb_faces += [f for f in all_faces if f not in visible]
+
+        thumb_idx = 0
+        for f in thumb_faces:
             cw = self.camera_widgets.get(f"CAM_{f}")
             if not cw:
                 continue
-            if f not in visible:
-                cw.setVisible(False)
-                cw.setParent(None)
-
-        thumb_idx = 0
-        for f in visible:
-            if f == face_id:
-                continue
-            cw = self.camera_widgets.get(f"CAM_{f}")
-            if cw:
-                row, col = divmod(thumb_idx, 3)
-                self.thumb_layout.addWidget(cw, row, col)
-                cw.setVisible(True)
-                thumb_idx += 1
+            row, col = divmod(thumb_idx, 3)
+            self.thumb_layout.addWidget(cw, row, col)
+            cw.setVisible(True)
+            thumb_idx += 1
 
         self.hero_layout.addWidget(target_cam)
         target_cam.setVisible(True)

@@ -372,7 +372,7 @@ def main():
             # Do not fall through to MSMF: its index order can differ from DSHOW / the port map.
             "allow_backend_fallback": False,
             "presets": presets,
-            "warmup_reads": 8 if sys.platform == "win32" else 5,
+            "warmup_reads": 16 if sys.platform == "win32" else 5,
             "open_settle_s": 1.5 if sys.platform == "win32" else 1.0,
             "robust_mode": True,
             "max_read_retries": 10,

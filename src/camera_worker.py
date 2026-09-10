@@ -31,6 +31,19 @@ GREEN_LASER_SETTINGS = {
     'dominance_ratio': 1.3,
 }
 
+# MJPG on some OV5693 units "opens" but returns an all-black buffer. Mean
+# luminance below this is treated as a failed format, not a live feed.
+_MIN_LIVE_MEAN = 8.0
+
+
+def _frame_has_image(frame: Optional[np.ndarray]) -> bool:
+    if frame is None or getattr(frame, "size", 0) == 0:
+        return False
+    try:
+        return float(np.mean(frame)) >= _MIN_LIVE_MEAN
+    except Exception:
+        return False
+
 
 class CameraWorker:
     """
@@ -74,6 +87,7 @@ class CameraWorker:
         self.reconnect_attempts = 0
         self._gave_up = False
         self._ready_emitted = False
+        self._black_streak = 0
         # Robust mode settings
         self.robust_mode = bool(self.capture_settings.get("robust_mode", False))
         self.max_read_retries = int(self.capture_settings.get("max_read_retries", 3))
@@ -329,14 +343,23 @@ class CameraWorker:
                         actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
                         # Warmup — Windows UVC often needs several frames before the
-                        # first successful read after format negotiation.
-                        ok = False
-                        for _ in range(max(warmup_reads, 1)):
-                            ok, _ = cap.read()
-                            if ok:
+                        # first successful read after format negotiation. MJPG can also
+                        # return an all-black buffer; reject that and try the next preset.
+                        live = None
+                        for _ in range(max(warmup_reads, 12)):
+                            ok, frame = cap.read()
+                            if not ok or frame is None:
+                                time.sleep(0.08)
+                                continue
+                            if _frame_has_image(frame):
+                                live = frame
                                 break
-                            time.sleep(0.1)
-                        if not ok:
+                            time.sleep(0.05)
+                        if live is None:
+                            print(
+                                f"[CAM_{self.face}] Opened USB {self.usb_index} "
+                                f"({preset.get('fourcc') or 'native'}) but frames are black — trying next format"
+                            )
                             cap.release()
                             continue
 
@@ -646,6 +669,18 @@ class CameraWorker:
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             elif frame is not None and frame.shape[2] == 4:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+            if not _frame_has_image(frame):
+                self._black_streak += 1
+                if self._black_streak >= 20:
+                    print(f"[CAM_{self.face}] Live frames are black — reconnecting with next format")
+                    self.is_connected = False
+                    self._black_streak = 0
+                    if self.cap:
+                        self.cap.release()
+                        self.cap = None
+                continue
+            self._black_streak = 0
             
             self.frame_count += 1
             fps_frame_count += 1

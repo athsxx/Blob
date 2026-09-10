@@ -699,12 +699,12 @@ class LogicEngine:
         Build an ordered inspection sequence for the guided mode.
 
         Filtering rules:
+        - Exclude rules whose input face has no camera in available_faces.
         - Exclude rules where ANY mandatory output has a single-face output
           that is NOT in available_faces (e.g. Face F when F is unavailable).
         - Compound faces like "C_F" are kept — they resolve to available faces.
-        - Rules with Face F as INPUT are included (operator physically inserts laser).
 
-        Ordering: input face A → B → C → D → E → F (F-input rules last).
+        Ordering: input face A → B → C → D → E → F.
 
         Args:
             available_faces: Set of face letters that have cameras (e.g. {'A','B','C','D','E'}).
@@ -734,6 +734,9 @@ class LogicEngine:
             if not rid or rid in seen_rule_ids:
                 continue
             if rule_has_unavailable_output(rule, available_faces):
+                continue
+            input_face = str(rule.get("input", {}).get("face", "")).upper()
+            if input_face and input_face not in available_faces:
                 continue
             seen_rule_ids.add(rid)
             eligible.append(rule)
