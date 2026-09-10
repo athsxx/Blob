@@ -100,34 +100,6 @@ def main():
         logger.stop()
         return
 
-    # ── Deterministic Camera Index Resolution (Windows: USB port-path fingerprinting) ──
-    # On Windows, usb_index values assigned by the OS can shift after reboots.
-    # resolve_camera_indices() corrects each camera's usb_index using the stable
-    # physical USB port path saved by tools/assign_camera_faces.py.
-    # On non-Windows platforms this is a safe no-op.
-    if args.skip_indexing:
-        print("[Main] --skip-indexing flag set: using cameras.json usb_index values as-is.")
-        print("       WARNING: camera-face mapping may be incorrect after a reboot or USB change.")
-        logger.log_system("WARN", "--skip-indexing: USB port-path resolution bypassed")
-    else:
-        try:
-            cameras = resolve_camera_indices(cameras, args.config_dir)
-        except RuntimeError as e:
-            # Port map missing — block startup and guide operator to wizard
-            print(str(e))
-            logger.log_system(
-                "ERROR",
-                "Startup blocked: camera_port_map.json missing. "
-                "Run: python tools/assign_camera_faces.py"
-            )
-            logger.stop()
-            return
-        except Exception as e:
-            # Unexpected resolver error — warn and fall back rather than crash
-            msg = f"Camera index resolver error: {e}. Falling back to cameras.json indices."
-            print(f"[WARN] {msg}")
-            logger.log_system("WARN", msg)
-
     # Defer Logic Engine initialization until manifold is selected
 
     # ── Multiprocessing setup ──
@@ -135,6 +107,7 @@ def main():
     result_queue = ctx.Queue()
     display_queue = ctx.Queue(maxsize=18) if not args.no_display else None
     control_event = ctx.Event()
+    ready_queue = ctx.Queue()
 
     processes = []
 
@@ -154,6 +127,46 @@ def main():
         )
         ui_mode = "PyQt6" if qt_app else "OpenCV"
         print(f"[Main] Dashboard initialized ({ui_mode}).")
+
+    # ── Deterministic Camera Index Resolution (Windows: USB port-path fingerprinting) ──
+    # Port map is written by the in-app Assign faces wizard or tools/assign_camera_faces.py.
+    if args.skip_indexing:
+        print("[Main] --skip-indexing flag set: using cameras.json usb_index values as-is.")
+        print("       WARNING: camera-face mapping may be incorrect after a reboot or USB change.")
+        logger.log_system("WARN", "--skip-indexing: USB port-path resolution bypassed")
+    else:
+        if sys.platform == "win32" and not check_port_map_exists(args.config_dir):
+            print("[Main] camera_port_map.json missing — face assignment required.")
+            assigned = False
+            if qt_app and dashboard and hasattr(dashboard, "run_face_assign_wizard"):
+                assigned = bool(dashboard.run_face_assign_wizard(required=True))
+            if not assigned:
+                msg = (
+                    "camera_port_map.json is missing. Assign cameras in the app "
+                    "(Assign camera faces) or run: python tools/assign_camera_faces.py"
+                )
+                print(f"[ERROR] {msg}")
+                logger.log_system("ERROR", msg)
+                logger.stop()
+                return
+            cameras = load_cameras(cameras_file)
+            cam_errors = validate_enabled_cameras(cameras)
+            if cam_errors:
+                for e in cam_errors:
+                    print(f"[ERROR] {e}")
+                logger.stop()
+                return
+        try:
+            cameras = resolve_camera_indices(cameras, args.config_dir)
+        except RuntimeError as e:
+            print(str(e))
+            logger.log_system("ERROR", str(e))
+            logger.stop()
+            return
+        except Exception as e:
+            msg = f"Camera index resolver error: {e}. Falling back to cameras.json indices."
+            print(f"[WARN] {msg}")
+            logger.log_system("WARN", msg)
 
     inspection_mode = "sequential"  # default
     selected_manifold = "DALIA"     # default
@@ -184,6 +197,17 @@ def main():
 
     # ── Dynamic Configuration Loading ──
     print(f"\n[Main] Operator Selected: Mode={inspection_mode}, Manifold={selected_manifold}")
+
+    # Reload + re-resolve after setup (operator may have assigned faces on the prep page)
+    cameras = load_cameras(cameras_file)
+    if not args.skip_indexing:
+        try:
+            cameras = resolve_camera_indices(cameras, args.config_dir)
+        except Exception as e:
+            print(f"[WARN] Camera index resolver error after setup: {e}")
+            logger.log_system("WARN", str(e))
+    if dashboard and hasattr(dashboard, "apply_resolved_cameras"):
+        dashboard.apply_resolved_cameras(cameras)
     
     # Rules + ROI folder from manifolds_registry.json (label → config subfolder)
     cfg_folder = manifold_folder_for_label(selected_manifold, args.config_dir) or "DALIA"
@@ -252,7 +276,13 @@ def main():
 
     # ── Build guided sequence (Sequential or manual/custom single rule) ──
     guided_sequence = []
-    available_faces = {'A', 'B', 'C', 'D', 'E', 'F'}
+    available_faces = {
+        str(c.get("face", "")).upper()
+        for c in cameras
+        if c.get("enabled", True) and c.get("face")
+    }
+    if not available_faces:
+        available_faces = {"A", "B", "C", "D", "E", "F"}
     custom_rule_id = getattr(dashboard, "custom_rule_id", None) if dashboard else None
 
     if inspection_mode == "sequential":
@@ -260,7 +290,10 @@ def main():
         engine.guided_mode = True
         if guided_sequence:
             engine.set_guided_step(0)
-        print(f"[Main] Guided sequence: {len(guided_sequence)} steps (all six faces)")
+        print(
+            f"[Main] Guided sequence: {len(guided_sequence)} steps "
+            f"(faces {', '.join(sorted(available_faces))})"
+        )
         if not guided_sequence and total_rules > 0:
             w = (
                 "Sequential mode: no guided steps after filtering (check cameras vs rule outputs). "
@@ -318,27 +351,33 @@ def main():
                 "width": cam.get("width", 640),
                 "height": cam.get("height", 480),
                 "fps": cam.get("fps", 15),
-                # No fourcc — let camera use native format (YUY2).
-                # MJPG causes blue-green color distortion on OV2064 cameras.
+                # MJPG first on Windows so five OV5693 cams fit on an extended hub.
+                **({"fourcc": "MJPG"} if sys.platform == "win32" else {}),
             },
             {
-                # Fallback: lower resolution for USB bandwidth relief
-                "width": 320,
-                "height": 240,
-                "fps": 15,
+                # Fallback: native/YUY2 at the same (ROI-calibrated) resolution.
+                # Do not fall back to 320x240 — ROI coordinates are in 640x480 space.
+                "width": cam.get("width", 640),
+                "height": cam.get("height", 480),
+                "fps": cam.get("fps", 15),
             },
         ]
 
-        backend = "dshow"  # DirectShow only on Windows — reliable multi-camera indexing
+        backend = "dshow"
         if sys.platform != "win32":
             backend = "auto"
 
         capture_settings = {
             "backend": backend,
+            # Do not fall through to MSMF: its index order can differ from DSHOW / the port map.
+            "allow_backend_fallback": False,
             "presets": presets,
-            "warmup_reads": 5,
+            "warmup_reads": 8 if sys.platform == "win32" else 5,
+            "open_settle_s": 1.5 if sys.platform == "win32" else 1.0,
             "robust_mode": True,
             "max_read_retries": 10,
+            "max_reconnect_attempts": 8,
+            "min_width": int(cam.get("width", 640)),
             "target_fps": 15,
             "reject_high_res": False,
             "reject_high_fps": False,
@@ -349,13 +388,9 @@ def main():
         hub_id = cam.get("hub", 0)
         open_semaphore = global_open_semaphore
 
-        # Stagger between camera opens — AVFoundation needs time to settle
-        time.sleep(2.5)
-        
         if qt_app:
-            qt_app.processEvents() # Keep UI responsive while loading hardware
-            
-        # Create command queue for this worker
+            qt_app.processEvents()
+
         c_queue = ctx.Queue()
         comm_queues[cam['face']] = c_queue
 
@@ -371,7 +406,8 @@ def main():
                 capture_settings,
                 hub_id,
                 open_semaphore,
-                c_queue
+                c_queue,
+                ready_queue,
             )
         )
         p.start()
@@ -379,6 +415,33 @@ def main():
         msg = f"Started worker for Face {cam['face']} (USB {cam['usb_index']}, hub {hub_id})"
         print(f"  {msg}")
         logger.log_system("INFO", msg)
+
+        # Handshake: wait for first connect result before opening the next camera.
+        ready_timeout_s = 25.0
+        deadline = time.time() + ready_timeout_s
+        got_ready = False
+        while time.time() < deadline:
+            if qt_app:
+                qt_app.processEvents()
+            try:
+                report = ready_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if str(report.get("face", "")).upper() != str(cam["face"]).upper():
+                continue
+            got_ready = True
+            if report.get("ok"):
+                print(
+                    f"  [OK] Face {cam['face']} opened "
+                    f"{report.get('width')}x{report.get('height')} "
+                    f"(backend={report.get('backend')})"
+                )
+            else:
+                print(f"  [FAIL] Face {cam['face']} did not open — continuing with remaining cameras")
+                logger.log_system("WARN", f"Face {cam['face']} initial open failed")
+            break
+        if not got_ready:
+            print(f"  [WARN] Face {cam['face']} did not report ready within {ready_timeout_s:.0f}s")
 
     print()
     print("=" * 60)

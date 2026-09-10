@@ -80,11 +80,12 @@
     }
   ],
   "_hardware": {
-    "camera_model": "USB Webcams",
+    "camera_model": "OV5693 5 MP USB Cam",
     "resolution": [
       640,
       480
     ],
-    "fps": 15
+    "fps": 15,
+    "windows_note": "On Windows, workers open with MJPG@640x480 first to fit multiple cameras on an extended USB hub. YUY2/native is tried only as fallback."
   }
 }

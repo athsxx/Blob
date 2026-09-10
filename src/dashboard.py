@@ -5,7 +5,7 @@ Stacked pages (QStackedWidget indices):
   0 — Mode: Sequential vs Manual inspection
   1 — Manifold: DALIA / Manifold 2 / Manifold 3
   2 — Manual setup only: dropdowns for manifold, input face, rule (then Continue)
-  3 — Pre-inspection: optional ROI calibration, then Continue to live view
+  3 — Pre-inspection: assign camera faces, optional ROI calibration, then Continue
   4 — Live dashboard (cameras, steps, START/STOP, etc.)
 
 3-column layout:
@@ -57,15 +57,17 @@ except ImportError:
 
 if HAS_PYQT6:
     try:
-        from camera_setup_ui import CameraSetupDialog, CalibrateRoiDialog
+        from camera_setup_ui import CameraSetupDialog, CalibrateRoiDialog, FaceAssignWizardDialog
         from manifold_setup_ui import AddManifoldDialog
     except ImportError:
         CameraSetupDialog = None  # type: ignore
         CalibrateRoiDialog = None  # type: ignore
+        FaceAssignWizardDialog = None  # type: ignore
         AddManifoldDialog = None  # type: ignore
 else:
     CameraSetupDialog = None  # type: ignore
     CalibrateRoiDialog = None  # type: ignore
+    FaceAssignWizardDialog = None  # type: ignore
     AddManifoldDialog = None  # type: ignore
 
 
@@ -1148,11 +1150,12 @@ class ManualInspectionSetupPage(QWidget):
 
 
 class PreInspectionSetupPage(QWidget):
-    """Optional ROI calibration before the live dashboard; main.py waits until Continue here."""
+    """ROI calibration + camera-face assignment before workers start."""
 
     sig_continue = pyqtSignal()
     sig_back = pyqtSignal()
     sig_calibrate = pyqtSignal()
+    sig_assign = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1172,7 +1175,7 @@ class PreInspectionSetupPage(QWidget):
         title = QLabel("Before live inspection")
         title.setObjectName("pageTitleMain")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub = QLabel("Optional ROI calibration, then continue. Cameras start after you press Continue.")
+        sub = QLabel("Assign cameras to faces A–F, optionally calibrate ROIs, then continue. Workers start after Continue.")
         sub.setObjectName("pageSubtitle")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setWordWrap(True)
@@ -1203,12 +1206,14 @@ class PreInspectionSetupPage(QWidget):
         explain.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         explain.setTextFormat(Qt.TextFormat.RichText)
         explain.setText(
-            "Face A through F maps to USB indices 0 through 5. Each feed loads "
-            "<span style='color:#79c0ff;'>hole_positions_cam0.json</span> … "
-            "<span style='color:#79c0ff;'>hole_positions_cam5.json</span> from your manifold folder "
-            "(the number matches the USB index).<br><br>"
-            "Those files stay on disk until you save new circles in the calibration tool (press "
-            "<b>s</b> in that window)."
+            "Each physical camera must be assigned to a manifold face. Use "
+            "<b>Assign camera faces</b> to scan USB cameras, look at the snapshot, "
+            "and pick Face A–F. That writes the USB port map the app uses on every boot.<br><br>"
+            "ROI files stay bound to the face letter: Face A loads "
+            "<span style='color:#79c0ff;'>hole_positions_cam0.json</span>, Face B "
+            "<span style='color:#79c0ff;'>hole_positions_cam1.json</span>, and so on — "
+            "even if Windows later changes the USB index. Unassigned faces are disabled "
+            "and will not show a live feed."
         )
         cvl.addWidget(explain)
         bl.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -1216,6 +1221,11 @@ class PreInspectionSetupPage(QWidget):
         actions = QHBoxLayout()
         actions.setSpacing(14)
         actions.addStretch(1)
+        btn_assign = QPushButton("Assign camera faces")
+        btn_assign.setObjectName("pageSecondary")
+        btn_assign.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_assign.setMinimumWidth(200)
+        btn_assign.clicked.connect(self.sig_assign.emit)
         btn_cal = QPushButton("Calibrate ROIs")
         btn_cal.setObjectName("pageSecondary")
         btn_cal.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1226,6 +1236,7 @@ class PreInspectionSetupPage(QWidget):
         btn_go.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_go.setMinimumWidth(200)
         btn_go.clicked.connect(self.sig_continue.emit)
+        actions.addWidget(btn_assign)
         actions.addWidget(btn_cal)
         actions.addWidget(btn_go)
         actions.addStretch(1)
@@ -1597,6 +1608,7 @@ class DashboardWindow(QMainWindow):
         self.prep_page.sig_continue.connect(self._on_prep_continue)
         self.prep_page.sig_back.connect(self._on_prep_back)
         self.prep_page.sig_calibrate.connect(self._on_prep_calibrate)
+        self.prep_page.sig_assign.connect(self._on_assign_faces)
         self.stacked_widget.addWidget(self.prep_page)
 
         # Stack 4: Live Dashboard
@@ -1627,7 +1639,7 @@ class DashboardWindow(QMainWindow):
         cl.addWidget(self.btn_override)
 
         cl.addSpacing(8)
-        self.btn_usb_map = self._make_btn("USB map", "btnSetup", self._on_usb_map, enabled=bool(self.cameras_file))
+        self.btn_usb_map = self._make_btn("Assign faces", "btnSetup", self._on_assign_faces, enabled=bool(self.config_dir or self.cameras_file))
         self.btn_calibrate = self._make_btn("Calibrate ROIs", "btnSetup", self._on_calibrate_rois, enabled=True)
         cl.addWidget(self.btn_usb_map)
         cl.addWidget(self.btn_calibrate)
@@ -1686,9 +1698,10 @@ class DashboardWindow(QMainWindow):
             cw = CameraWidget(face, usb_index=self._face_to_index.get(face))
             self.camera_widgets[f"CAM_{face}"] = cw
         
-        # Initialize Layout (Hero = A, others = thumbnails)
+        # Initialize Layout (Hero = first enabled face)
         self._current_hero = None
-        self.set_hero_camera('A')
+        enabled = self.enabled_faces()
+        self.set_hero_camera(enabled[0] if enabled else "A")
 
         # ── Footer: progress bar ──
         footer = QFrame()
@@ -1800,6 +1813,51 @@ class DashboardWindow(QMainWindow):
     def _on_prep_calibrate(self):
         self._open_calibrate_roi_dialog()
 
+    def _on_assign_faces(self):
+        """Open the in-app face assignment wizard (same persist path as the CLI tool)."""
+        if not HAS_PYQT6 or FaceAssignWizardDialog is None:
+            QMessageBox.warning(
+                self,
+                "Assign faces",
+                "Face assignment UI is unavailable. Run:\n  python tools/assign_camera_faces.py",
+            )
+            return
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        live = self.stacked_widget.currentIndex() == 4
+        if live:
+            go = QMessageBox.question(
+                self,
+                "Assign camera faces",
+                "Live camera workers may already hold the USB devices. "
+                "The scan needs exclusive access and works best before Continue "
+                "(on the pre-inspection page), or after fully quitting the app.\n\n"
+                "Scan anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if go != QMessageBox.StandardButton.Yes:
+                return
+        dlg = FaceAssignWizardDialog(cdir, DARK_STYLESHEET, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.apply_resolved_cameras(self._all_camera_configs())
+            QMessageBox.information(
+                self,
+                "Assignment saved",
+                "Camera-face mapping saved. If inspection workers are already running, "
+                "quit and relaunch so they reopen the correct USB indices.",
+            )
+
+    def apply_resolved_cameras(self, cameras: List[Dict[str, Any]]) -> None:
+        """Apply indexer output (usb_index / enabled) to dashboard labels and layout."""
+        self._cameras_list = list(cameras)
+        for c in cameras:
+            face = str(c.get("face", "")).upper()
+            if face and c.get("usb_index") is not None:
+                self._face_to_index[face] = int(c["usb_index"])
+        enabled = self.enabled_faces()
+        if enabled:
+            self.set_hero_camera(self._current_hero if self._current_hero in enabled else enabled[0])
+
     def _all_camera_configs(self) -> List[Dict[str, Any]]:
         """Full cameras.json list (includes disabled entries) for ROI calibration."""
         if self.cameras_file and os.path.isfile(self.cameras_file):
@@ -1895,54 +1953,73 @@ class DashboardWindow(QMainWindow):
             QTimer.singleShot(0, loop.quit)
         super().closeEvent(event)
 
+    def enabled_faces(self) -> List[str]:
+        """Faces that currently have an enabled camera (in-memory resolver state preferred)."""
+        source = self._cameras_list or self._all_camera_configs()
+        enabled: List[str] = []
+        for c in source:
+            face = str(c.get("face", "")).upper()
+            if face and c.get("enabled", True) and face not in enabled:
+                enabled.append(face)
+        if not enabled:
+            return ["A", "B", "C", "D", "E", "F"]
+        order = "ABCDEF"
+        enabled.sort(key=lambda f: order.index(f) if f in order else 99)
+        return enabled
+
     def set_hero_camera(self, face_id: str):
         """
         Promotes the given face_id camera to the Hero slot.
         Demotes the previous hero to the thumbnail grid.
+        Disabled / unassigned faces are hidden.
         """
+        visible = self.enabled_faces()
+        if face_id not in visible:
+            face_id = visible[0] if visible else "A"
+
         target_cam = self.camera_widgets.get(f"CAM_{face_id}")
         if not target_cam:
             return
 
         if self._current_hero == face_id:
-            return  # Already hero
+            # Still refresh thumbnail visibility if the enabled set changed.
+            pass
+        else:
+            if self._current_hero:
+                prev_cam = self.camera_widgets.get(f"CAM_{self._current_hero}")
+                if prev_cam:
+                    self.hero_layout.removeWidget(prev_cam)
+                    prev_cam.setParent(None)
 
-        # 1. Remove previous hero (if any) and move to thumbnails
-        if self._current_hero:
-            prev_cam = self.camera_widgets.get(f"CAM_{self._current_hero}")
-            if prev_cam:
-                self.hero_layout.removeWidget(prev_cam)
-                prev_cam.setParent(None) # Detach
-        
-        # 2. Clear Hero Layout (just in case)
-        while self.hero_layout.count():
-            item = self.hero_layout.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
+            while self.hero_layout.count():
+                item = self.hero_layout.takeAt(0)
+                if item.widget():
+                    item.widget().setParent(None)
 
-        # 3. Re-build Thumbnail Grid
-        # We want to show ALL cameras EXCEPT the new hero in a nice grid.
-        # Clean current thumbnails
         while self.thumb_layout.count():
             item = self.thumb_layout.takeAt(0)
             if item.widget():
                 item.widget().setParent(None)
 
-        # Add cameras to thumbnail grid, skipping the target hero
-        faces = ['A', 'B', 'C', 'D', 'E', 'F']
+        for f in ["A", "B", "C", "D", "E", "F"]:
+            cw = self.camera_widgets.get(f"CAM_{f}")
+            if not cw:
+                continue
+            if f not in visible:
+                cw.setVisible(False)
+                cw.setParent(None)
+
         thumb_idx = 0
-        for f in faces:
+        for f in visible:
             if f == face_id:
                 continue
-            
             cw = self.camera_widgets.get(f"CAM_{f}")
             if cw:
-                row, col = divmod(thumb_idx, 3) # 3 columns for thumbnails
+                row, col = divmod(thumb_idx, 3)
                 self.thumb_layout.addWidget(cw, row, col)
                 cw.setVisible(True)
                 thumb_idx += 1
 
-        # 4. Add Target to Hero
         self.hero_layout.addWidget(target_cam)
         target_cam.setVisible(True)
         self._current_hero = face_id
@@ -2099,11 +2176,26 @@ class DashboardWindow(QMainWindow):
             rule_id, result = dlg.get_selection()
             self.sig_override.emit(rule_id, result)
 
-    def _on_usb_map(self):
-        if not HAS_PYQT6 or CameraSetupDialog is None or not self.cameras_file:
-            return
-        dlg = CameraSetupDialog(self.cameras_file, DARK_STYLESHEET, self)
-        dlg.exec()
+    def run_face_assign_wizard(self, required: bool = False) -> bool:
+        """
+        Show the face-assignment wizard. Returns True if the operator saved a mapping.
+        When required=True, Cancel leaves no mapping (caller should exit).
+        """
+        if not HAS_PYQT6 or FaceAssignWizardDialog is None:
+            return False
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        dlg = FaceAssignWizardDialog(cdir, DARK_STYLESHEET, self)
+        saved = dlg.exec() == QDialog.DialogCode.Accepted
+        if saved:
+            self.apply_resolved_cameras(self._all_camera_configs())
+        elif required:
+            QMessageBox.warning(
+                self,
+                "Camera faces not assigned",
+                "The inspection system needs a camera-face mapping before it can open USB cameras.\n"
+                "Use Assign camera faces, or run:\n  python tools/assign_camera_faces.py",
+            )
+        return saved
 
     def _on_calibrate_rois(self):
         self._open_calibrate_roi_dialog()

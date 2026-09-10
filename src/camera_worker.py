@@ -43,7 +43,8 @@ class CameraWorker:
                  capture_settings: Optional[Dict[str, Any]] = None,
                  hub_id: Optional[int] = None,
                  open_semaphore=None,
-                 command_queue=None):
+                 command_queue=None,
+                 ready_queue=None):
         """
         Args:
             usb_index: USB camera index (0-5)
@@ -63,6 +64,7 @@ class CameraWorker:
         self.hub_id = hub_id
         self.open_semaphore = open_semaphore
         self.command_queue = command_queue
+        self.ready_queue = ready_queue
         
         # State
         self.cap = None
@@ -70,9 +72,13 @@ class CameraWorker:
         self.target_hole_id = None  # Hole ID to highlight as next target
         self.is_connected = False
         self.reconnect_attempts = 0
+        self._gave_up = False
+        self._ready_emitted = False
         # Robust mode settings
         self.robust_mode = bool(self.capture_settings.get("robust_mode", False))
         self.max_read_retries = int(self.capture_settings.get("max_read_retries", 3))
+        self.max_reconnect_attempts = int(self.capture_settings.get("max_reconnect_attempts", 8))
+        self.min_width = int(self.capture_settings.get("min_width", 0))
         self.reconnect_backoff_s = float(self.capture_settings.get("reconnect_cooldown", 1.0))
         self.reconnect_backoff_initial = self.reconnect_backoff_s
         self.reconnect_backoff_max_s = 10.0
@@ -249,11 +255,13 @@ class CameraWorker:
         """Attempt to connect to the camera."""
         try:
             backend_name = str(self.capture_settings.get("backend", "auto")).lower().strip()
+            allow_fallback = bool(self.capture_settings.get("allow_backend_fallback", True))
             if backend_name in {"auto", "default", ""}:
                 if sys.platform == "darwin":
                     backend_candidates = [("avfoundation", cv2.CAP_AVFOUNDATION), ("any", cv2.CAP_ANY)]
                 elif sys.platform == "win32":
-                    backend_candidates = [("msmf", cv2.CAP_MSMF), ("dshow", cv2.CAP_DSHOW), ("any", cv2.CAP_ANY)]
+                    # Prefer DirectShow so indices match camera_indexer / CAP_DSHOW.
+                    backend_candidates = [("dshow", cv2.CAP_DSHOW), ("msmf", cv2.CAP_MSMF), ("any", cv2.CAP_ANY)]
                 else:
                     backend_candidates = [("v4l2", cv2.CAP_V4L2), ("any", cv2.CAP_ANY)]
             elif backend_name in {"avfoundation", "avf"}:
@@ -263,14 +271,20 @@ class CameraWorker:
                 backend_candidates = [("ffmpeg", cv2.CAP_FFMPEG)]
             elif backend_name == "msmf":
                 backend_candidates = [("msmf", cv2.CAP_MSMF)]
+                if allow_fallback and sys.platform == "win32":
+                    backend_candidates += [("dshow", cv2.CAP_DSHOW), ("any", cv2.CAP_ANY)]
             elif backend_name == "dshow":
                 backend_candidates = [("dshow", cv2.CAP_DSHOW)]
+                if allow_fallback and sys.platform == "win32":
+                    # MSMF as last resort only — index order can differ from DSHOW.
+                    backend_candidates += [("msmf", cv2.CAP_MSMF), ("any", cv2.CAP_ANY)]
             elif backend_name == "v4l2":
                 backend_candidates = [("v4l2", cv2.CAP_V4L2)]
             else:
                 backend_candidates = [("any", cv2.CAP_ANY)]
 
             used_backend_name = None
+            used_fourcc = None
             if self.open_semaphore is not None:
                 self.open_semaphore.acquire()
             try:
@@ -278,6 +292,7 @@ class CameraWorker:
                 if not presets:
                     presets = [self.capture_settings]
                 warmup_reads = int(self.capture_settings.get("warmup_reads", 1))
+                settle_s = float(self.capture_settings.get("open_settle_s", 1.0))
 
                 self.cap = None
                 # Use stable device_path if set (e.g. /dev/v4l/by-path/... on Linux), else usb_index
@@ -289,7 +304,9 @@ class CameraWorker:
                             cap.release()
                             continue
 
-                        # Apply preset properties
+                        # Apply preset properties. On Windows DirectShow, set FOURCC
+                        # before width/height so the driver renegotiates once onto a
+                        # bandwidth-friendly format (MJPG) instead of default YUY2.
                         width = preset.get("width")
                         height = preset.get("height")
                         fps = preset.get("fps")
@@ -311,14 +328,27 @@ class CameraWorker:
                         actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
-                        # Simple warmup - just verify camera can read at least once
+                        # Warmup — Windows UVC often needs several frames before the
+                        # first successful read after format negotiation.
                         ok = False
-                        for _ in range(warmup_reads):
+                        for _ in range(max(warmup_reads, 1)):
                             ok, _ = cap.read()
                             if ok:
                                 break
                             time.sleep(0.1)
                         if not ok:
+                            cap.release()
+                            continue
+
+                        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        actual_fps = cap.get(cv2.CAP_PROP_FPS)
+
+                        if self.min_width and actual_w and actual_w < self.min_width:
+                            print(
+                                f"[CAM_{self.face}] Rejecting {actual_w}x{actual_h} "
+                                f"(need width ≥ {self.min_width} so ROI coordinates stay valid)"
+                            )
                             cap.release()
                             continue
 
@@ -336,14 +366,16 @@ class CameraWorker:
 
                         self.cap = cap
                         used_backend_name = name
+                        used_fourcc = fourcc
+                        self._used_backend_name = name
                         break
                     if self.cap is not None and self.cap.isOpened():
                         break
 
-                # Settle delay — let AVFoundation fully establish the connection
-                # before the next camera tries to open on the same USB bus
-                if self.cap is not None and self.cap.isOpened():
-                    time.sleep(1.0)
+                # Settle delay — let the USB stack fully establish the connection
+                # before the next camera tries to open on the same hub.
+                if self.cap is not None and self.cap.isOpened() and settle_s > 0:
+                    time.sleep(settle_s)
             finally:
                 if self.open_semaphore is not None:
                     self.open_semaphore.release()
@@ -356,16 +388,19 @@ class CameraWorker:
                 actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
                 open_desc = self.capture_settings.get("device_path") or f"USB {self.usb_index}"
+                fourcc_note = f", fourcc={used_fourcc}" if used_fourcc else ""
                 print(
                     f"[CAM_{self.face}] Connected to {open_desc} "
-                    f"({actual_w}x{actual_h} @ {actual_fps:.1f}fps, backend={used_backend_name or backend_name})"
+                    f"({actual_w}x{actual_h} @ {actual_fps:.1f}fps, "
+                    f"backend={used_backend_name or backend_name}{fourcc_note})"
                 )
                 return True
             else:
                 open_desc = self.capture_settings.get("device_path") or f"USB index {self.usb_index}"
+                tried = ",".join(n for n, _ in backend_candidates)
                 print(
                     f"[CAM_{self.face}] Failed to open {open_desc} "
-                    f"(backend={backend_name})"
+                    f"(requested={backend_name}, tried={tried})"
                 )
                 return False
                 
@@ -401,9 +436,16 @@ class CameraWorker:
                 self.reconnect_backoff_s * 1.5,
                 self.reconnect_backoff_max_s
             )
+            if self.reconnect_attempts >= self.max_reconnect_attempts:
+                self._gave_up = True
+                print(
+                    f"[CAM_{self.face}] Giving up after {self.reconnect_attempts} failed opens. "
+                    "Worker will idle so it does not hammer DirectShow."
+                )
         else:
             # Reset backoff on success
             self.reconnect_backoff_s = self.reconnect_backoff_initial
+            self._gave_up = False
         return success
     
     def process_frame(self, frame: np.ndarray) -> Dict[str, Any]:
@@ -556,8 +598,10 @@ class CameraWorker:
         self.load_rois()
         
         # Initial connection
-        if not self.connect():
+        ok = self.connect()
+        if not ok:
             print(f"[CAM_{self.face}] Initial connection failed. Will retry...")
+        self._emit_ready(ok)
         
         last_fps_time = time.time()
         fps_frame_count = 0
@@ -565,6 +609,9 @@ class CameraWorker:
         while not self.control_event.is_set():
             # Check connection
             if not self.is_connected:
+                if self._gave_up:
+                    time.sleep(1)
+                    continue
                 if not self.reconnect():
                     time.sleep(1)
                     continue
@@ -662,13 +709,37 @@ class CameraWorker:
             self.cap = None
         print(f"[CAM_{self.face}] Worker stopped.")
 
+    def _emit_ready(self, ok: bool) -> None:
+        if self._ready_emitted or self.ready_queue is None:
+            return
+        self._ready_emitted = True
+        width = height = 0
+        if self.cap is not None:
+            try:
+                width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            except Exception:
+                pass
+        try:
+            self.ready_queue.put({
+                "face": self.face,
+                "ok": bool(ok),
+                "usb_index": self.usb_index,
+                "width": width,
+                "height": height,
+                "backend": getattr(self, "_used_backend_name", "") or "",
+            })
+        except Exception:
+            pass
+
 
 def camera_worker_process(usb_index: int, face: str, config_file: str,
                           result_queue, control_event, display_queue=None,
                           capture_settings: Optional[Dict[str, Any]] = None,
                           hub_id: Optional[int] = None,
                           open_semaphore=None,
-                          command_queue=None):
+                          command_queue=None,
+                          ready_queue=None):
     """
     Entry point for multiprocessing.Process target.
     """
@@ -682,6 +753,7 @@ def camera_worker_process(usb_index: int, face: str, config_file: str,
         capture_settings=capture_settings,
         hub_id=hub_id,
         open_semaphore=open_semaphore,
-        command_queue=command_queue
+        command_queue=command_queue,
+        ready_queue=ready_queue,
     )
     worker.run()

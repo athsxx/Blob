@@ -201,6 +201,9 @@ Blob\
 | `python` not found | Re-install Python with "Add to PATH" checked |
 | Camera not detected | Try different USB port, check Device Manager |
 | Black camera feed | Ensure no other app is using the camera |
+| Only some of 5–6 cameras show | Use a **powered** USB hub. In the app, open **Assign camera faces** (pre-inspection page) and skip the missing camera — unassigned faces are disabled. Workers open **MJPG @ 640×480** so OV5693 cams fit on one hub. |
+| Face F (or another face) missing from port map | Use **Assign camera faces** in the app (or `python tools/assign_camera_faces.py`) so every connected camera has a USB port-path entry |
+| DirectShow "can't be used to capture by index" spam | Usually a missing/unplugged index being retried, or USB bandwidth. Missing faces are auto-disabled when Windows reports fewer cameras than configured |
 | PyQt6 error | Run with `--cv` flag for OpenCV fallback |
 | Slow display | Normal on first launch; stabilizes after warm-up |
 | Permission error | Run Command Prompt as Administrator |

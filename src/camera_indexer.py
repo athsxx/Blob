@@ -132,9 +132,10 @@ def _get_wmi_camera_instance_ids_ordered() -> List[str]:
         import subprocess
         import json as _json
 
+        # Do NOT Sort-Object InstanceId — alphabetical order does not match
+        # DirectShow / OpenCV CAP_DSHOW index order. Preserve PnP enumeration order.
         ps_cmd = (
             "Get-PnpDevice -Class Camera -Status OK | "
-            "Sort-Object InstanceId | "
             "Select-Object -ExpandProperty InstanceId | "
             "ConvertTo-Json -Compress"
         )
@@ -437,9 +438,10 @@ def resolve_camera_indices(
                     entry["usb_index_last_seen"] = found_index
                     print(f"  [OK] Face {face} -> USB index {found_index}  (re-enumerated, port: {port_path})")
                 else:
+                    cam["enabled"] = False
                     print(
                         f"  [WARN] Face {face}: camera with port_path={port_path!r} NOT found. "
-                        f"Check cable. Keeping current index {cam.get('usb_index')} as fallback."
+                        "DISABLED (will not spawn a worker). Check the cable or re-run Assign camera faces."
                     )
 
         # Persist refreshed cache
@@ -467,15 +469,50 @@ def resolve_camera_indices(
             f"\n[CameraIndexer] *** DUPLICATE USB INDEX {idx} ***"
             f"  Faces sharing this index: {faces_str}"
         )
+        keeper = None
         for cam in face_cams:
             face = str(cam.get("face", "?")).upper()
+            if port_map_by_face.get(face) and keeper is None:
+                keeper = cam
+        if keeper is None:
+            keeper = face_cams[0]
+        for cam in face_cams:
+            if cam is keeper:
+                continue
+            face = str(cam.get("face", "?")).upper()
+            cam["enabled"] = False
+            print(
+                f"[CameraIndexer] DISABLED Face {face} (USB index {idx} already used by "
+                f"Face {keeper.get('face')}). Re-run Assign camera faces."
+            )
+
+    # ── Disable faces whose USB index is outside currently present devices ──
+    # Missing cameras (e.g. Face F unplugged) must not spawn reconnect workers:
+    # their DirectShow open spam destabilizes the shared USB hub and can prevent
+    # other faces (often Face D) from opening while siblings are already streaming.
+    present_paths = _get_wmi_camera_instance_ids_ordered()
+    present_count = len(present_paths) if present_paths else None
+    if present_count is not None:
+        print(f"[CameraIndexer] Windows reports {present_count} present UVC camera(s).")
+        for cam in cameras:
+            if not cam.get("enabled", True):
+                continue
+            face = str(cam.get("face", "?")).upper()
+            idx = int(cam.get("usb_index", -1))
             entry = port_map_by_face.get(face)
-            if not entry:
-                # This face has no port map entry — it's the fallback one
+            if idx < 0 or idx >= present_count:
                 cam["enabled"] = False
                 print(
-                    f"[CameraIndexer] DISABLED Face {face} (no port map entry, "
-                    f"was using fallback index {idx} which conflicts with another face). "
+                    f"[CameraIndexer] DISABLED Face {face} (USB index {idx} "
+                    f"out of range for {present_count} connected camera(s))."
+                )
+            elif not entry and present_count < 6:
+                # Fallback faces with no port-map entry are unreliable when a
+                # subset of the six faces is cabled — skip rather than guess.
+                cam["enabled"] = False
+                print(
+                    f"[CameraIndexer] DISABLED Face {face} (no port map entry and "
+                    f"only {present_count}/6 cameras connected). "
                     f"Re-run: python tools/assign_camera_faces.py"
                 )
 

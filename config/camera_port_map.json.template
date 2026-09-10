@@ -4,6 +4,7 @@
     "Run the assignment wizard to generate the real file:",
     "    python tools/assign_camera_faces.py",
     "The wizard will create config/camera_port_map.json with your actual USB port paths.",
+    "You can also assign faces from the app: Assign camera faces on the pre-inspection page."
     "This template shows the expected schema."
   ],
   "schema_version": 1,
@@ -12,37 +13,37 @@
     {
       "face": "A",
       "port_path": "USB\\VID_XXXX&PID_XXXX\\5&XXXXXXXX&0&1",
-      "device_description": "OV2064 USB Camera",
+      "device_description": "OV5693 5 MP USB Cam",
       "usb_index_last_seen": 0
     },
     {
       "face": "B",
       "port_path": "USB\\VID_XXXX&PID_XXXX\\5&XXXXXXXX&0&2",
-      "device_description": "OV2064 USB Camera",
+      "device_description": "OV5693 5 MP USB Cam",
       "usb_index_last_seen": 1
     },
     {
       "face": "C",
       "port_path": "USB\\VID_XXXX&PID_XXXX\\5&XXXXXXXX&0&3",
-      "device_description": "OV2064 USB Camera",
+      "device_description": "OV5693 5 MP USB Cam",
       "usb_index_last_seen": 2
     },
     {
       "face": "D",
       "port_path": "USB\\VID_XXXX&PID_XXXX\\5&XXXXXXXX&0&4",
-      "device_description": "OV2064 USB Camera",
+      "device_description": "OV5693 5 MP USB Cam",
       "usb_index_last_seen": 3
     },
     {
       "face": "E",
       "port_path": "USB\\VID_XXXX&PID_XXXX\\5&XXXXXXXX&0&5",
-      "device_description": "OV2064 USB Camera",
+      "device_description": "OV5693 5 MP USB Cam",
       "usb_index_last_seen": 4
     },
     {
       "face": "F",
       "port_path": "USB\\VID_XXXX&PID_XXXX\\5&XXXXXXXX&0&6",
-      "device_description": "OV2064 USB Camera",
+      "device_description": "OV5693 5 MP USB Cam",
       "usb_index_last_seen": 5
     }
   ]
