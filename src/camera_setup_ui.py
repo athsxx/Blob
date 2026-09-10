@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -519,3 +520,113 @@ class CalibrateRoiDialog(QDialog):
             "Stop the main inspection first if the camera is already in use.",
         )
         self.accept()
+
+
+class AdminCaptureDialog(QDialog):
+    """PIN-locked capture profile: resolution, fps, MJPG. Applies on next launch."""
+
+    def __init__(self, config_dir: str, stylesheet: str = "", parent=None):
+        super().__init__(parent)
+        self._config_dir = config_dir
+        self.setWindowTitle("Admin — capture lock")
+        self.setMinimumWidth(420)
+        if stylesheet:
+            self.setStyleSheet(stylesheet)
+
+        from capture_profile import load_capture_profile
+
+        self._profile = load_capture_profile(config_dir)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("Capture lock")
+        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #f0f6fc;")
+        layout.addWidget(title)
+        hint = QLabel(
+            "These settings apply to every camera. Unlock with the admin PIN, "
+            "save, then quit and relaunch so workers reopen with the new profile."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #8b949e; font-size: 12px;")
+        layout.addWidget(hint)
+
+        pin_row = QHBoxLayout()
+        self._pin = QLineEdit()
+        self._pin.setEchoMode(QLineEdit.EchoMode.Password)
+        self._pin.setPlaceholderText("Admin PIN")
+        unlock = QPushButton("Unlock")
+        unlock.setObjectName("pageSecondary")
+        unlock.clicked.connect(self._unlock)
+        pin_row.addWidget(self._pin, stretch=1)
+        pin_row.addWidget(unlock)
+        layout.addLayout(pin_row)
+
+        form = QFormLayout()
+        self._size = QComboBox()
+        self._size.addItem("320 × 240 (recommended)", userData=(320, 240))
+        self._size.addItem("640 × 480", userData=(640, 480))
+        form.addRow("Resolution", self._size)
+
+        self._fps = QSpinBox()
+        self._fps.setRange(1, 10)
+        self._fps.setSuffix(" fps")
+        form.addRow("Frame rate", self._fps)
+
+        self._fourcc = QLabel("MJPG  ·  DirectShow")
+        self._fourcc.setStyleSheet("color: #8b949e;")
+        form.addRow("Format", self._fourcc)
+        layout.addLayout(form)
+
+        self._save = QPushButton("Save and lock")
+        self._save.setObjectName("pagePrimary")
+        self._save.clicked.connect(self._on_save)
+        layout.addWidget(self._save)
+
+        self._set_form_enabled(False)
+        self._load_values()
+        self._pin.returnPressed.connect(self._unlock)
+
+    def _set_form_enabled(self, on: bool) -> None:
+        self._size.setEnabled(on)
+        self._fps.setEnabled(on)
+        self._save.setEnabled(on)
+
+    def _load_values(self) -> None:
+        w = int(self._profile.get("width", 320))
+        self._size.setCurrentIndex(1 if w >= 640 else 0)
+        self._fps.setValue(int(self._profile.get("fps", 5)))
+
+    def _unlock(self) -> None:
+        entered = self._pin.text().strip()
+        expected = str(self._profile.get("admin_pin") or "2468")
+        if entered != expected:
+            QMessageBox.warning(self, "Admin", "Wrong PIN.")
+            return
+        self._set_form_enabled(True)
+        self._pin.clear()
+        QMessageBox.information(self, "Admin", "Unlocked. Save after you change settings.")
+
+    def _on_save(self) -> None:
+        from capture_profile import save_capture_profile
+
+        pair = self._size.currentData()
+        width, height = pair if pair else (320, 240)
+        save_capture_profile(
+            self._config_dir,
+            {
+                "width": int(width),
+                "height": int(height),
+                "fps": int(self._fps.value()),
+                "fourcc": "MJPG",
+                "backend": "dshow",
+            },
+        )
+        QMessageBox.information(
+            self,
+            "Admin",
+            "Capture lock saved.\nQuit the app and run python main.py again for all six cameras to use it.",
+        )
+        self.accept()
+

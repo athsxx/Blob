@@ -57,17 +57,19 @@ except ImportError:
 
 if HAS_PYQT6:
     try:
-        from camera_setup_ui import CameraSetupDialog, CalibrateRoiDialog, FaceAssignWizardDialog
+        from camera_setup_ui import CameraSetupDialog, CalibrateRoiDialog, FaceAssignWizardDialog, AdminCaptureDialog
         from manifold_setup_ui import AddManifoldDialog
     except ImportError:
         CameraSetupDialog = None  # type: ignore
         CalibrateRoiDialog = None  # type: ignore
         FaceAssignWizardDialog = None  # type: ignore
+        AdminCaptureDialog = None  # type: ignore
         AddManifoldDialog = None  # type: ignore
 else:
     CameraSetupDialog = None  # type: ignore
     CalibrateRoiDialog = None  # type: ignore
     FaceAssignWizardDialog = None  # type: ignore
+    AdminCaptureDialog = None  # type: ignore
     AddManifoldDialog = None  # type: ignore
 
 
@@ -1171,6 +1173,7 @@ class PreInspectionSetupPage(QWidget):
     sig_back = pyqtSignal()
     sig_calibrate = pyqtSignal()
     sig_assign = pyqtSignal()
+    sig_admin = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1190,7 +1193,7 @@ class PreInspectionSetupPage(QWidget):
         title = QLabel("Before live inspection")
         title.setObjectName("pageTitleMain")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub = QLabel("Assign cameras to faces A–F, optionally calibrate ROIs, then continue. Workers start after Continue.")
+        sub = QLabel("Assign cameras to faces A–F, lock capture settings if needed, optionally calibrate ROIs, then continue. Workers start after Continue.")
         sub.setObjectName("pageSubtitle")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setWordWrap(True)
@@ -1246,6 +1249,11 @@ class PreInspectionSetupPage(QWidget):
         btn_cal.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_cal.setMinimumWidth(200)
         btn_cal.clicked.connect(self.sig_calibrate.emit)
+        btn_admin = QPushButton("Admin (capture lock)")
+        btn_admin.setObjectName("pageSecondary")
+        btn_admin.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_admin.setMinimumWidth(200)
+        btn_admin.clicked.connect(self.sig_admin.emit)
         btn_go = QPushButton("Continue to live view")
         btn_go.setObjectName("pagePrimary")
         btn_go.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1253,6 +1261,7 @@ class PreInspectionSetupPage(QWidget):
         btn_go.clicked.connect(self.sig_continue.emit)
         actions.addWidget(btn_assign)
         actions.addWidget(btn_cal)
+        actions.addWidget(btn_admin)
         actions.addWidget(btn_go)
         actions.addStretch(1)
         bl.addLayout(actions)
@@ -1624,6 +1633,7 @@ class DashboardWindow(QMainWindow):
         self.prep_page.sig_back.connect(self._on_prep_back)
         self.prep_page.sig_calibrate.connect(self._on_prep_calibrate)
         self.prep_page.sig_assign.connect(self._on_assign_faces)
+        self.prep_page.sig_admin.connect(self._on_admin_capture)
         self.stacked_widget.addWidget(self.prep_page)
 
         # Stack 4: Live Dashboard
@@ -1656,8 +1666,10 @@ class DashboardWindow(QMainWindow):
         cl.addSpacing(8)
         self.btn_usb_map = self._make_btn("Assign faces", "btnSetup", self._on_assign_faces, enabled=bool(self.config_dir or self.cameras_file))
         self.btn_calibrate = self._make_btn("Calibrate ROIs", "btnSetup", self._on_calibrate_rois, enabled=True)
+        self.btn_admin = self._make_btn("Admin", "btnSetup", self._on_admin_capture, enabled=True)
         cl.addWidget(self.btn_usb_map)
         cl.addWidget(self.btn_calibrate)
+        cl.addWidget(self.btn_admin)
 
         cl.addStretch()
 
@@ -1827,6 +1839,14 @@ class DashboardWindow(QMainWindow):
 
     def _on_prep_calibrate(self):
         self._open_calibrate_roi_dialog()
+
+    def _on_admin_capture(self):
+        if not HAS_PYQT6 or AdminCaptureDialog is None:
+            QMessageBox.warning(self, "Admin", "Admin UI is unavailable.")
+            return
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        dlg = AdminCaptureDialog(cdir, DARK_STYLESHEET, self)
+        dlg.exec()
 
     def _on_assign_faces(self):
         """Open the in-app face assignment wizard (same persist path as the CLI tool)."""

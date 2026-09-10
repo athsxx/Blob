@@ -86,6 +86,6 @@
       480
     ],
     "fps": 5,
-    "windows_note": "On Windows, workers open MJPG 320x240 @ 5 fps first so all six cameras can share one USB hub. MJPG 640x480 @ 5 fps is the only fallback. Uncompressed YUY2 is not used. ROI files stay calibrated at 640x480 and are scaled to the live frame."
+    "windows_note": "Locked capture profile is config/capture_profile.json (default 320x240 MJPG @ 5 fps). Workers pace reads in software so every tile reports the same FPS. USB MJPG garbage is dropped and the last good frame is held. Open Admin (PIN 2468) to change; quit and relaunch after save."
   }
 }

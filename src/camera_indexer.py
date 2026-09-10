@@ -49,6 +49,8 @@ import time
 import cv2
 from typing import Dict, List, Optional, Tuple, Any
 
+from capture_profile import attach_hubs
+
 PORT_MAP_FILENAME = "camera_port_map.json"
 PORT_MAP_SCHEMA_VERSION = 1
 
@@ -516,19 +518,23 @@ def resolve_camera_indices(
                     f"Re-run: python tools/assign_camera_faces.py"
                 )
 
+    # ── Stamp USB parent hub ids (front vs rear) ─────────────────────────────
+    attach_hubs(cameras, port_map_by_face)
+
     # ── Print final resolved mapping ─────────────────────────────────────────
     print()
     print("[CameraIndexer] ── Final Resolved Face -> USB Index Mapping ──────────")
-    print(f"  {'Face':<6} {'USB':<5} {'Status':<10} {'Port Path'}")
-    print(f"  {'----':<6} {'---':<5} {'------':<10} {'--------------------------------------------------'}")
+    print(f"  {'Face':<6} {'USB':<5} {'Hub':<5} {'Status':<10} {'Port Path'}")
+    print(f"  {'----':<6} {'---':<5} {'---':<5} {'------':<10} {'--------------------------------------------------'}")
     for cam in cameras:
         face = str(cam.get("face", "?")).upper()
         idx = cam.get("usb_index", "?")
+        hub = cam.get("hub", "?")
         enabled = cam.get("enabled", True)
         status = "enabled" if enabled else "DISABLED"
         entry = port_map_by_face.get(face, {})
-        port = entry.get("port_path", "(no entry in port map)")
-        print(f"  {face:<6} {str(idx):<5} {status:<10} {port}")
+        port = cam.get("port_path") or entry.get("port_path", "(no entry in port map)")
+        print(f"  {face:<6} {str(idx):<5} {str(hub):<5} {status:<10} {port}")
     print("[CameraIndexer] ──────────────────────────────────────────────────────")
     print()
 

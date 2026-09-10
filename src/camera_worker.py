@@ -45,6 +45,34 @@ def _frame_is_dead(frame: Optional[np.ndarray]) -> bool:
         return True
 
 
+def _frame_is_corrupt(frame: Optional[np.ndarray]) -> bool:
+    """True for USB MJPG underrun garbage (neon stripes on a dark frame).
+
+    A green laser is a few pixels. Do not treat that as corrupt.
+    """
+    if frame is None or getattr(frame, "size", 0) == 0:
+        return True
+    try:
+        small = cv2.resize(frame, (80, 60), interpolation=cv2.INTER_AREA)
+        hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+        sat = hsv[:, :, 1]
+        val = hsv[:, :, 2]
+        mean_val = float(val.mean())
+        neon_frac = float(((sat > 160) & (val > 30)).mean())
+        if mean_val < 40.0 and neon_frac > 0.025:
+            return True
+        if neon_frac > 0.12:
+            return True
+        g = small[:, :, 1].astype(np.int16)
+        r = small[:, :, 2].astype(np.int16)
+        row_chroma = np.abs(g - r).mean(axis=1)
+        if float((row_chroma > 45).mean()) > 0.30:
+            return True
+    except Exception:
+        return False
+    return False
+
+
 class CameraWorker:
     """
     Manages a single camera's capture and detection loop.
@@ -133,6 +161,7 @@ class CameraWorker:
         self.frame_count = 0
         self.last_frame_time = 0
         self.fps_actual = 0
+        self._last_good: Optional[np.ndarray] = None
         
         # Detection history for temporal stability
         self.detection_history: Dict[str, List[bool]] = {}
@@ -353,6 +382,8 @@ class CameraWorker:
                             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
                         if fps:
                             cap.set(cv2.CAP_PROP_FPS, float(fps))
+                            # Some UVC drivers ignore the first FPS write until size is set.
+                            cap.set(cv2.CAP_PROP_FPS, float(fps))
 
                         # Reduce buffering if supported
                         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -431,6 +462,8 @@ class CameraWorker:
                 self.is_connected = True
                 self.reconnect_attempts = 0
                 self.reconnect_backoff_s = 0.5
+                if self.target_fps > 0:
+                    self.cap.set(cv2.CAP_PROP_FPS, float(self.target_fps))
                 actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
@@ -649,6 +682,7 @@ class CameraWorker:
         
         last_fps_time = time.time()
         fps_frame_count = 0
+        next_frame_due = 0.0
         
         while not self.control_event.is_set():
             # Check connection
@@ -659,6 +693,12 @@ class CameraWorker:
                 if not self.reconnect():
                     time.sleep(1)
                     continue
+
+            now = time.time()
+            if self.frame_interval > 0 and now < next_frame_due:
+                time.sleep(min(0.02, next_frame_due - now))
+                continue
+            next_frame_due = time.time() + (self.frame_interval if self.frame_interval > 0 else 0.2)
             
             # Read frame with extended retry in robust mode
             ret, frame = self.cap.read()
@@ -691,15 +731,18 @@ class CameraWorker:
             elif frame is not None and frame.shape[2] == 4:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
-            # Drop USB underrun buffers without tearing down the stream.
-            # Reconnecting here saturates the hub and knocks later cameras offline.
-            if _frame_is_dead(frame):
-                continue
+            # USB underrun / MJPG garbage: keep the last good picture, do not reconnect.
+            if _frame_is_dead(frame) or _frame_is_corrupt(frame):
+                if self._last_good is None:
+                    continue
+                frame = self._last_good
+            else:
+                self._last_good = frame.copy()
             
             self.frame_count += 1
             fps_frame_count += 1
             
-            # Calculate actual FPS
+            # Calculate actual FPS from paced slots (all cameras should report ~target)
             now = time.time()
             if now - last_fps_time >= 1.0:
                 self.fps_actual = fps_frame_count / (now - last_fps_time)
@@ -712,50 +755,32 @@ class CameraWorker:
                     cmd = self.command_queue.get_nowait()
                     if cmd.get('action') == 'set_target':
                         self.target_hole_id = cmd.get('hole_id')
-                except:
+                except Exception:
                     pass
 
             if self.display_queue:
-                if (now - self.last_display_time) >= self.display_interval:
-                    try:
-                        fh, fw = frame.shape[:2]
-                        if not self._masks_built or self._frame_size != (fh, fw):
-                            self._build_roi_masks(fh, fw)
-                        display_frame = self.draw_overlays(frame, self.last_detections)
-                        dw, dh = self.display_size
-                        if display_frame.shape[1] > dw or display_frame.shape[0] > dh:
-                            small = cv2.resize(display_frame, (dw, dh))
-                        else:
-                            small = display_frame
-                        self.display_queue.put_nowait((f"CAM_{self.face}", small))
-                        self.last_display_time = now
-                    except:
-                        pass  # Queue full, skip this display frame
-            
-            # Frame throttling - skip PROCESSING if running faster than target_fps
-            # Processing is more expensive (blob detection), so throttle more aggressively
-            if self.frame_interval > 0 and (now - self.last_process_time) < self.frame_interval:
-                continue  # Skip processing, but display was already sent above
-            # Check commands
-            if self.command_queue:
                 try:
-                    cmd = self.command_queue.get_nowait()
-                    if cmd.get('action') == 'set_target':
-                        self.target_hole_id = cmd.get('hole_id')
-                except:
+                    fh, fw = frame.shape[:2]
+                    if not self._masks_built or self._frame_size != (fh, fw):
+                        self._build_roi_masks(fh, fw)
+                    display_frame = self.draw_overlays(frame, self.last_detections)
+                    dw, dh = self.display_size
+                    if display_frame.shape[1] > dw or display_frame.shape[0] > dh:
+                        small = cv2.resize(display_frame, (dw, dh))
+                    else:
+                        small = display_frame
+                    self.display_queue.put_nowait((f"CAM_{self.face}", small))
+                    self.last_display_time = now
+                except Exception:
                     pass
-
-            self.last_process_time = now
             
-            # Process frame (blob detection - expensive operation)
+            self.last_process_time = now
             result = self.process_frame(frame)
             self.last_detections = result['detections']
-            
-            # Send result to queue (non-blocking)
             try:
                 self.result_queue.put_nowait(result)
-            except:
-                pass  # Queue full, skip this result
+            except Exception:
+                pass
         
         # Cleanup
         if self.cap:

@@ -42,7 +42,8 @@ from config_loader import (
     connectivity_rules_path_ok,
 )
 from camera_worker import camera_worker_process
-from camera_indexer import resolve_camera_indices, check_port_map_exists
+from capture_profile import attach_hubs, interleave_by_hub, load_capture_profile
+from camera_indexer import resolve_camera_indices, check_port_map_exists, load_port_map
 from dashboard import create_dashboard, HAS_PYQT6
 from logic_engine import LogicEngine
 from logger import get_logger
@@ -105,7 +106,7 @@ def main():
     # ── Multiprocessing setup ──
     ctx = mp.get_context('spawn')
     result_queue = ctx.Queue()
-    display_queue = ctx.Queue(maxsize=18) if not args.no_display else None
+    display_queue = ctx.Queue(maxsize=24) if not args.no_display else None
     control_event = ctx.Event()
     ready_queue = ctx.Queue()
 
@@ -333,8 +334,22 @@ def main():
     # Communication queues for sending commands to workers
     comm_queues = {} # Face -> Queue
 
-    # Open cameras sequentially by USB index
-    cameras_sorted = sorted(cameras, key=lambda c: c.get('usb_index', 0))
+    # Open one camera per USB parent, round-robin (front vs rear), not all of one hub first.
+    port_entries = load_port_map(args.config_dir) or []
+    port_map_by_face = {
+        str(e.get("face", "")).upper(): e
+        for e in port_entries
+        if e.get("face")
+    }
+    attach_hubs(cameras, port_map_by_face)
+    cameras_sorted = interleave_by_hub(cameras)
+
+    profile = load_capture_profile(os.path.dirname(cameras_file))
+    print(
+        f"[Main] Capture profile: {profile['width']}x{profile['height']} "
+        f"{profile['fourcc']} @ {profile['fps']:.0f} fps "
+        f"(edit via Admin, PIN in config/capture_profile.json)"
+    )
 
     for cam in cameras_sorted:
         if not cam.get('enabled', True):
@@ -347,14 +362,17 @@ def main():
             config_path = os.path.abspath(config_path)
 
         if sys.platform == "win32":
-            # Six OV5693s on one hub cannot sustain MJPG 640×480 @ 15 fps.
-            # Open MJPG 320×240 @ 5 fps first so every face gets a live tile.
-            # ROI files stay in 640×480 space and are scaled in the worker.
-            capture_fps = 5
+            capture_fps = float(profile["fps"])
+            width = int(profile["width"])
+            height = int(profile["height"])
+            fourcc = str(profile["fourcc"] or "MJPG")
             presets = [
-                {"width": 320, "height": 240, "fps": capture_fps, "fourcc": "MJPG"},
-                {"width": 640, "height": 480, "fps": capture_fps, "fourcc": "MJPG"},
+                {"width": width, "height": height, "fps": capture_fps, "fourcc": fourcc},
             ]
+            if width < 640:
+                presets.append(
+                    {"width": 640, "height": 480, "fps": capture_fps, "fourcc": fourcc}
+                )
         else:
             capture_fps = float(cam.get("fps", 15) or 15)
             presets = [
@@ -417,7 +435,10 @@ def main():
         )
         p.start()
         processes.append(p)
-        msg = f"Started worker for Face {cam['face']} (USB {cam['usb_index']}, hub {hub_id})"
+        msg = (
+            f"Started worker for Face {cam['face']} "
+            f"(USB {cam['usb_index']}, hub {hub_id} {cam.get('hub_key', '')})"
+        )
         print(f"  {msg}")
         logger.log_system("INFO", msg)
 

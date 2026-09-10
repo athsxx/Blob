@@ -1,0 +1,8 @@
+{
+  "admin_pin": "2468",
+  "width": 320,
+  "height": 240,
+  "fps": 5,
+  "fourcc": "MJPG",
+  "backend": "dshow"
+}
