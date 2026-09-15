@@ -162,6 +162,7 @@ class CameraWorker:
         self.last_frame_time = 0
         self.fps_actual = 0
         self._last_good: Optional[np.ndarray] = None
+        self._gave_up_at = 0.0
         
         # Detection history for temporal stability
         self.detection_history: Dict[str, List[bool]] = {}
@@ -518,9 +519,10 @@ class CameraWorker:
             )
             if self.reconnect_attempts >= self.max_reconnect_attempts:
                 self._gave_up = True
+                self._gave_up_at = time.time()
                 print(
                     f"[CAM_{self.face}] Giving up after {self.reconnect_attempts} failed opens. "
-                    "Worker will idle so it does not hammer DirectShow."
+                    "Will retry after a cooldown so DirectShow is not hammered."
                 )
         else:
             # Reset backoff on success
@@ -682,74 +684,110 @@ class CameraWorker:
         
         last_fps_time = time.time()
         fps_frame_count = 0
-        next_frame_due = 0.0
+        next_use = 0.0
+        fail_streak = 0
+        corrupt_streak = 0
+        hold_since = None
+        last_heartbeat = time.time()
         
         while not self.control_event.is_set():
             # Check connection
             if not self.is_connected:
                 if self._gave_up:
-                    time.sleep(1)
-                    continue
+                    if time.time() - self._gave_up_at > 45.0:
+                        print(f"[CAM_{self.face}] Cooldown over — retrying camera open")
+                        self._gave_up = False
+                        self.reconnect_attempts = 0
+                    else:
+                        time.sleep(1)
+                        continue
                 if not self.reconnect():
                     time.sleep(1)
                     continue
 
-            now = time.time()
-            if self.frame_interval > 0 and now < next_frame_due:
-                time.sleep(min(0.02, next_frame_due - now))
+            # Always dequeue a USB sample. Sleeping between reads lets DirectShow
+            # stall after a few minutes and the tile looks frozen.
+            try:
+                grabbed = bool(self.cap is not None and self.cap.grab())
+            except Exception:
+                grabbed = False
+            if not grabbed:
+                fail_streak += 1
+                if fail_streak >= 25:
+                    print(f"[CAM_{self.face}] DirectShow grab stalled — reconnecting")
+                    self.is_connected = False
+                    fail_streak = 0
+                    if self.cap:
+                        self.cap.release()
+                        self.cap = None
+                else:
+                    time.sleep(0.01)
                 continue
-            next_frame_due = time.time() + (self.frame_interval if self.frame_interval > 0 else 0.2)
-            
-            # Read frame with extended retry in robust mode
-            ret, frame = self.cap.read()
-            if not ret:
-                retry_ok = False
-                retry_count = self.max_read_retries if self.robust_mode else 2
-                for attempt in range(retry_count):
-                    time.sleep(0.05)
-                    ret, frame = self.cap.read()
-                    if ret:
-                        retry_ok = True
-                        break
-                if not retry_ok:
-                    if self.robust_mode:
-                        # In robust mode, keep trying without triggering reconnect
-                        time.sleep(0.1)
-                        continue
-                    else:
-                        print(f"[CAM_{self.face}] Frame read failed. Attempting reconnect...")
-                        self.is_connected = False
-                        if self.cap:
-                            self.cap.release()
-                            self.cap = None
-                        continue
-            
+
+            now = time.time()
+            if self.frame_interval > 0 and now < next_use:
+                time.sleep(0.001)
+                continue
+            next_use = now + (self.frame_interval if self.frame_interval > 0 else 0.2)
+
+            try:
+                ok, frame = self.cap.retrieve()
+            except Exception:
+                ok, frame = False, None
+            if not ok or frame is None:
+                fail_streak += 1
+                if fail_streak >= 25:
+                    print(f"[CAM_{self.face}] Frame retrieve stalled — reconnecting")
+                    self.is_connected = False
+                    fail_streak = 0
+                    if self.cap:
+                        self.cap.release()
+                        self.cap = None
+                continue
+            fail_streak = 0
+
             # Color-space safety: ensure frame is 3-channel BGR
-            # Some cameras return grayscale or 4-channel (BGRA) under certain backends
-            if frame is not None and len(frame.shape) == 2:
+            if len(frame.shape) == 2:
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-            elif frame is not None and frame.shape[2] == 4:
+            elif frame.shape[2] == 4:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
-            # USB underrun / MJPG garbage: keep the last good picture, do not reconnect.
-            if _frame_is_dead(frame) or _frame_is_corrupt(frame):
-                if self._last_good is None:
+            # Short hold on neon USB garbage, then force a refresh so tiles cannot
+            # freeze on last-good for minutes.
+            live_bad = _frame_is_dead(frame) or _frame_is_corrupt(frame)
+            if live_bad:
+                corrupt_streak += 1
+                if self._last_good is not None and corrupt_streak >= 3:
+                    if hold_since is None:
+                        hold_since = now
+                    if now - hold_since < 1.5:
+                        frame = self._last_good
+                    else:
+                        hold_since = None
+                        corrupt_streak = 0
+                        self._last_good = frame.copy()
+                elif self._last_good is None:
                     continue
-                frame = self._last_good
             else:
+                corrupt_streak = 0
+                hold_since = None
                 self._last_good = frame.copy()
             
             self.frame_count += 1
             fps_frame_count += 1
             
-            # Calculate actual FPS from paced slots (all cameras should report ~target)
             now = time.time()
             if now - last_fps_time >= 1.0:
                 self.fps_actual = fps_frame_count / (now - last_fps_time)
                 fps_frame_count = 0
                 last_fps_time = now
+            if now - last_heartbeat >= 60.0:
+                print(
+                    f"[CAM_{self.face}] alive {self.fps_actual:.1f}fps "
+                    f"frames={self.frame_count}"
+                )
+                last_heartbeat = now
             
-            # Check commands
             if self.command_queue:
                 try:
                     cmd = self.command_queue.get_nowait()
