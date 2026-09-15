@@ -17,6 +17,7 @@ import os
 import json
 import time
 import sys
+from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -36,41 +37,114 @@ GREEN_LASER_SETTINGS = {
 _DEAD_FRAME_MAX = 1.5
 
 
-def _frame_is_dead(frame: Optional[np.ndarray]) -> bool:
-    if frame is None or getattr(frame, "size", 0) == 0:
-        return True
+def _fourcc_name(value: float) -> str:
     try:
-        return float(np.max(frame)) < _DEAD_FRAME_MAX
+        v = int(value)
+        chars = "".join(chr((v >> (8 * i)) & 0xFF) for i in range(4))
+        if all(32 <= ord(c) < 127 for c in chars):
+            return chars
+        return f"0x{v:08x}"
     except Exception:
-        return True
+        return "?"
 
 
-def _frame_is_corrupt(frame: Optional[np.ndarray]) -> bool:
-    """True for USB MJPG underrun garbage (neon stripes on a dark frame).
-
-    A green laser is a few pixels. Do not treat that as corrupt.
-    """
+def _frame_quality(frame: Optional[np.ndarray]) -> Tuple[str, Dict[str, float]]:
+    """Classify a buffer: ok / dead_* / corrupt_*. Stats are for logs."""
+    stats: Dict[str, float] = {
+        "mean": -1.0,
+        "max": -1.0,
+        "val_mean": -1.0,
+        "neon": -1.0,
+        "chroma_rows": -1.0,
+        "w": 0.0,
+        "h": 0.0,
+    }
     if frame is None or getattr(frame, "size", 0) == 0:
-        return True
+        return "dead_empty", stats
     try:
+        stats["h"] = float(frame.shape[0])
+        stats["w"] = float(frame.shape[1])
+        stats["max"] = float(np.max(frame))
+        stats["mean"] = float(np.mean(frame))
+        if stats["max"] < _DEAD_FRAME_MAX:
+            return "dead_black", stats
         small = cv2.resize(frame, (80, 60), interpolation=cv2.INTER_AREA)
         hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
         sat = hsv[:, :, 1]
         val = hsv[:, :, 2]
-        mean_val = float(val.mean())
-        neon_frac = float(((sat > 160) & (val > 30)).mean())
-        if mean_val < 40.0 and neon_frac > 0.025:
-            return True
-        if neon_frac > 0.12:
-            return True
+        stats["val_mean"] = float(val.mean())
+        stats["neon"] = float(((sat > 160) & (val > 30)).mean())
         g = small[:, :, 1].astype(np.int16)
         r = small[:, :, 2].astype(np.int16)
         row_chroma = np.abs(g - r).mean(axis=1)
-        if float((row_chroma > 45).mean()) > 0.30:
-            return True
-    except Exception:
-        return False
-    return False
+        stats["chroma_rows"] = float((row_chroma > 45).mean())
+        if stats["val_mean"] < 40.0 and stats["neon"] > 0.025:
+            return "corrupt_neon_dark", stats
+        if stats["neon"] > 0.12:
+            return "corrupt_neon", stats
+        if stats["chroma_rows"] > 0.30:
+            return "corrupt_chroma_stripes", stats
+        return "ok", stats
+    except Exception as exc:
+        stats["error"] = -1.0
+        return f"quality_error:{exc}", stats
+
+
+def _frame_is_dead(frame: Optional[np.ndarray]) -> bool:
+    reason, _ = _frame_quality(frame)
+    return reason.startswith("dead_")
+
+
+def _frame_is_corrupt(frame: Optional[np.ndarray]) -> bool:
+    reason, _ = _frame_quality(frame)
+    return reason.startswith("corrupt_")
+
+
+def _fmt_stats(stats: Dict[str, float]) -> str:
+    return (
+        f"mean={stats.get('mean', -1):.1f} val={stats.get('val_mean', -1):.1f} "
+        f"max={stats.get('max', -1):.0f} neon={stats.get('neon', -1):.3f} "
+        f"chroma={stats.get('chroma_rows', -1):.3f} "
+        f"{int(stats.get('w', 0))}x{int(stats.get('h', 0))}"
+    )
+
+
+class _CamTrace:
+    """Per-face diagnostic log: console + logs/camera_face_X.log (flushed)."""
+
+    def __init__(self, face: str, log_dir: str):
+        self.face = face
+        os.makedirs(log_dir, exist_ok=True)
+        self.path = os.path.join(log_dir, f"camera_face_{face}.log")
+        self._fp = open(self.path, "a", encoding="utf-8")
+        self.n: Dict[str, int] = defaultdict(int)
+        self.emit(f"=== trace open file={self.path} pid={os.getpid()} ===")
+
+    def emit(self, msg: str) -> None:
+        line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} [CAM_{self.face}] {msg}"
+        print(line, flush=True)
+        try:
+            self._fp.write(line + "\n")
+            self._fp.flush()
+        except Exception:
+            pass
+
+    def bump(self, key: str) -> int:
+        self.n[key] += 1
+        return self.n[key]
+
+    def maybe(self, key: str, msg: str, first: int = 3, every: int = 25) -> int:
+        n = self.bump(key)
+        if n <= first or n % every == 0:
+            self.emit(f"{msg} (count={n})")
+        return n
+
+    def close(self) -> None:
+        try:
+            self.emit("=== trace close ===")
+            self._fp.close()
+        except Exception:
+            pass
 
 
 class CameraWorker:
@@ -106,6 +180,15 @@ class CameraWorker:
         self.open_semaphore = open_semaphore
         self.command_queue = command_queue
         self.ready_queue = ready_queue
+        log_dir = str(self.capture_settings.get("log_dir") or "")
+        if not log_dir:
+            log_dir = os.path.abspath(os.path.join(os.path.dirname(self.config_file), "..", "..", "logs"))
+        self.trace = _CamTrace(self.face, log_dir)
+        self.trace.emit(
+            f"worker init usb={self.usb_index} hub={self.hub_id} "
+            f"target_fps={self.capture_settings.get('target_fps')} "
+            f"config={self.config_file}"
+        )
         
         # State
         self.cap = None
@@ -171,7 +254,7 @@ class CameraWorker:
     def load_rois(self) -> bool:
         """Load ROI definitions from config file."""
         if not os.path.exists(self.config_file):
-            print(f"[CAM_{self.face}] Warning: Config not found: {self.config_file}")
+            self.trace.emit(f"Warning: Config not found: {self.config_file}")
             return False
         
         try:
@@ -211,12 +294,12 @@ class CameraWorker:
                 # Initialize detection history
                 self.detection_history[name] = []
             
-            print(f"[CAM_{self.face}] Loaded {len(self.rois)} ROIs from {self.config_file}")
+            self.trace.emit(f"Loaded {len(self.rois)} ROIs from {self.config_file}")
             self._masks_built = False  # Force mask rebuild on next frame
             return True
             
         except Exception as e:
-            print(f"[CAM_{self.face}] Error loading config: {e}")
+            self.trace.emit(f"Error loading config: {e}")
             return False
 
     def _scaled_roi(self, roi: Dict[str, Any]) -> Tuple[int, int, int, int, float]:
@@ -253,8 +336,8 @@ class CameraWorker:
             self.roi_mask_bools[hole_id] = mask > 0
 
         self._masks_built = True
-        print(
-            f"[CAM_{self.face}] Built {len(self.roi_masks)} ROI masks "
+        self.trace.emit(
+            f"Built {len(self.roi_masks)} ROI masks "
             f"({frame_w}x{frame_h}, scale {self._roi_scale[0]:.2f}x{self._roi_scale[1]:.2f})"
         )
 
@@ -362,19 +445,23 @@ class CameraWorker:
                 open_target = self.capture_settings.get("device_path") or self.usb_index
                 for preset in presets:
                     for name, backend in backend_candidates:
+                        width = preset.get("width")
+                        height = preset.get("height")
+                        fps = preset.get("fps")
+                        fourcc = preset.get("fourcc")
+                        self.trace.emit(
+                            f"try open target={open_target} backend={name} "
+                            f"want={width}x{height}@{fps} fourcc={fourcc or 'native'}"
+                        )
                         cap = cv2.VideoCapture(open_target, backend)
                         if not cap.isOpened():
+                            self.trace.emit(f"open FAILED isOpened=false backend={name} target={open_target}")
                             cap.release()
                             continue
 
                         # Apply preset properties. On Windows DirectShow, set FOURCC
                         # before width/height so the driver renegotiates once onto a
                         # bandwidth-friendly format (MJPG) instead of default YUY2.
-                        width = preset.get("width")
-                        height = preset.get("height")
-                        fps = preset.get("fps")
-                        fourcc = preset.get("fourcc")
-
                         if fourcc:
                             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*str(fourcc)))
                         if width:
@@ -383,63 +470,73 @@ class CameraWorker:
                             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
                         if fps:
                             cap.set(cv2.CAP_PROP_FPS, float(fps))
-                            # Some UVC drivers ignore the first FPS write until size is set.
                             cap.set(cv2.CAP_PROP_FPS, float(fps))
 
-                        # Reduce buffering if supported
                         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
                         actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         actual_fps = cap.get(cv2.CAP_PROP_FPS)
+                        self.trace.emit(
+                            f"negotiated {actual_w}x{actual_h} fps={actual_fps:.2f} "
+                            f"fourcc={_fourcc_name(cap.get(cv2.CAP_PROP_FOURCC))} "
+                            f"buf={int(cap.get(cv2.CAP_PROP_BUFFERSIZE))}"
+                        )
 
-                        # Warmup — Windows UVC often needs several frames after
-                        # format negotiation. Only skip a preset if every buffer
-                        # is all zeros (USB underrun). Dim metal must still count
-                        # as a live image so we do not fall through to YUY2.
                         live = None
                         saw_zero_buffer = False
+                        warmup_ok = 0
+                        warmup_fail = 0
+                        last_q = "none"
+                        last_stats: Dict[str, float] = {}
                         for _ in range(max(1, warmup_reads)):
                             ok, frame = cap.read()
                             if not ok or frame is None:
+                                warmup_fail += 1
                                 time.sleep(0.08)
                                 continue
-                            if _frame_is_dead(frame):
+                            last_q, last_stats = _frame_quality(frame)
+                            if last_q.startswith("dead_"):
                                 saw_zero_buffer = True
+                                warmup_fail += 1
                                 time.sleep(0.05)
                                 continue
+                            warmup_ok += 1
                             live = frame
                             break
                         if live is None:
                             reason = "all-zero buffers" if saw_zero_buffer else "no frames"
-                            print(
-                                f"[CAM_{self.face}] Opened USB {self.usb_index} "
-                                f"({preset.get('fourcc') or 'native'}) but {reason} — trying next format"
+                            self.trace.emit(
+                                f"warmup FAIL ({reason}) reads_ok={warmup_ok} reads_fail={warmup_fail} "
+                                f"last={last_q} {_fmt_stats(last_stats)} — next format"
                             )
                             cap.release()
                             continue
+                        self.trace.emit(
+                            f"warmup OK after {warmup_ok + warmup_fail} reads "
+                            f"last={last_q} {_fmt_stats(last_stats)}"
+                        )
 
                         actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         actual_fps = cap.get(cv2.CAP_PROP_FPS)
 
                         if self.min_width and actual_w and actual_w < self.min_width:
-                            print(
-                                f"[CAM_{self.face}] Rejecting {actual_w}x{actual_h} "
-                                f"(need width ≥ {self.min_width})"
+                            self.trace.emit(
+                                f"Rejecting {actual_w}x{actual_h} (need width ≥ {self.min_width})"
                             )
                             cap.release()
                             continue
 
                         # Reject cameras that stay at high resolution (USB bandwidth issue)
                         if self.reject_high_res and actual_w > 640:
-                            print(f"[CAM_{self.face}] Rejecting {actual_w}x{actual_h} - resolution too high (need ≤640)")
+                            self.trace.emit(f"Rejecting {actual_w}x{actual_h} - resolution too high (need ≤640)")
                             cap.release()
                             continue
 
                         # Reject cameras that report excessively high FPS
                         if self.reject_high_fps and actual_fps > 30:
-                            print(f"[CAM_{self.face}] Rejecting @ {actual_fps}fps - FPS too high (need ≤30)")
+                            self.trace.emit(f"Rejecting @ {actual_fps}fps - FPS too high (need ≤30)")
                             cap.release()
                             continue
 
@@ -469,24 +566,23 @@ class CameraWorker:
                 actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
                 open_desc = self.capture_settings.get("device_path") or f"USB {self.usb_index}"
-                fourcc_note = f", fourcc={used_fourcc}" if used_fourcc else ""
-                print(
-                    f"[CAM_{self.face}] Connected to {open_desc} "
-                    f"({actual_w}x{actual_h} @ {actual_fps:.1f}fps, "
-                    f"backend={used_backend_name or backend_name}{fourcc_note})"
+                reported_fourcc = _fourcc_name(self.cap.get(cv2.CAP_PROP_FOURCC))
+                self.trace.emit(
+                    f"CONNECTED {open_desc} {actual_w}x{actual_h} "
+                    f"reported_fps={actual_fps:.2f} backend={used_backend_name or backend_name} "
+                    f"req_fourcc={used_fourcc or 'native'} got_fourcc={reported_fourcc}"
                 )
                 return True
             else:
                 open_desc = self.capture_settings.get("device_path") or f"USB index {self.usb_index}"
                 tried = ",".join(n for n, _ in backend_candidates)
-                print(
-                    f"[CAM_{self.face}] Failed to open {open_desc} "
-                    f"(requested={backend_name}, tried={tried})"
+                self.trace.emit(
+                    f"FAILED open {open_desc} requested={backend_name} tried={tried}"
                 )
                 return False
                 
         except Exception as e:
-            print(f"[CAM_{self.face}] Connection error: {e}")
+            self.trace.emit(f"Connection error: {e}")
             if self.cap is not None:
                 try:
                     self.cap.release()
@@ -498,9 +594,8 @@ class CameraWorker:
     def reconnect(self) -> bool:
         """Attempt to reconnect after disconnect."""
         self.reconnect_attempts += 1
-        print(
-            f"[CAM_{self.face}] Reconnect attempt {self.reconnect_attempts} "
-            f"(backoff {self.reconnect_backoff_s:.1f}s)"
+        self.trace.emit(
+            f"reconnect attempt {self.reconnect_attempts} backoff={self.reconnect_backoff_s:.1f}s"
         )
         
         # Release old capture and wait for OS to fully release device
@@ -520,9 +615,8 @@ class CameraWorker:
             if self.reconnect_attempts >= self.max_reconnect_attempts:
                 self._gave_up = True
                 self._gave_up_at = time.time()
-                print(
-                    f"[CAM_{self.face}] Giving up after {self.reconnect_attempts} failed opens. "
-                    "Will retry after a cooldown so DirectShow is not hammered."
+                self.trace.emit(
+                    f"giving up after {self.reconnect_attempts} failed opens; retry in 45s"
                 )
         else:
             # Reset backoff on success
@@ -671,7 +765,7 @@ class CameraWorker:
     
     def run(self):
         """Main capture loop. Call this in a separate process."""
-        print(f"[CAM_{self.face}] Starting worker...")
+        self.trace.emit(f"Starting worker...")
         
         # Load ROIs
         self.load_rois()
@@ -679,7 +773,7 @@ class CameraWorker:
         # Initial connection
         ok = self.connect()
         if not ok:
-            print(f"[CAM_{self.face}] Initial connection failed. Will retry...")
+            self.trace.emit(f"Initial connection failed. Will retry...")
         self._emit_ready(ok)
         
         last_fps_time = time.time()
@@ -688,14 +782,18 @@ class CameraWorker:
         fail_streak = 0
         corrupt_streak = 0
         hold_since = None
+        holding = False
         last_heartbeat = time.time()
+        last_quality = "ok"
+        last_stats: Dict[str, float] = {}
+        t0 = time.time()
         
         while not self.control_event.is_set():
             # Check connection
             if not self.is_connected:
                 if self._gave_up:
                     if time.time() - self._gave_up_at > 45.0:
-                        print(f"[CAM_{self.face}] Cooldown over — retrying camera open")
+                        self.trace.emit("Cooldown over — retrying camera open")
                         self._gave_up = False
                         self.reconnect_attempts = 0
                     else:
@@ -709,12 +807,19 @@ class CameraWorker:
             # stall after a few minutes and the tile looks frozen.
             try:
                 grabbed = bool(self.cap is not None and self.cap.grab())
-            except Exception:
+            except Exception as exc:
                 grabbed = False
+                self.trace.maybe("grab_exc", f"grab exception: {exc!r}", first=5, every=50)
             if not grabbed:
                 fail_streak += 1
+                self.trace.maybe(
+                    "grab_fail",
+                    f"grab FAIL streak={fail_streak} cap={self.cap is not None}",
+                    first=5,
+                    every=25,
+                )
                 if fail_streak >= 25:
-                    print(f"[CAM_{self.face}] DirectShow grab stalled — reconnecting")
+                    self.trace.emit("DirectShow grab stalled — reconnecting")
                     self.is_connected = False
                     fail_streak = 0
                     if self.cap:
@@ -723,6 +828,7 @@ class CameraWorker:
                 else:
                     time.sleep(0.01)
                 continue
+            self.trace.bump("grab_ok")
 
             now = time.time()
             if self.frame_interval > 0 and now < next_use:
@@ -732,12 +838,19 @@ class CameraWorker:
 
             try:
                 ok, frame = self.cap.retrieve()
-            except Exception:
+            except Exception as exc:
                 ok, frame = False, None
+                self.trace.maybe("retrieve_exc", f"retrieve exception: {exc!r}", first=5, every=50)
             if not ok or frame is None:
                 fail_streak += 1
+                self.trace.maybe(
+                    "retrieve_fail",
+                    f"retrieve FAIL streak={fail_streak}",
+                    first=5,
+                    every=25,
+                )
                 if fail_streak >= 25:
-                    print(f"[CAM_{self.face}] Frame retrieve stalled — reconnecting")
+                    self.trace.emit("Frame retrieve stalled — reconnecting")
                     self.is_connected = False
                     fail_streak = 0
                     if self.cap:
@@ -745,6 +858,7 @@ class CameraWorker:
                         self.cap = None
                 continue
             fail_streak = 0
+            self.trace.bump("retrieve_ok")
 
             # Color-space safety: ensure frame is 3-channel BGR
             if len(frame.shape) == 2:
@@ -752,25 +866,49 @@ class CameraWorker:
             elif frame.shape[2] == 4:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
+            last_quality, last_stats = _frame_quality(frame)
+            if last_quality != "ok":
+                self.trace.bump(last_quality)
+                self.trace.maybe(
+                    f"q_{last_quality}",
+                    f"BAD frame {last_quality} {_fmt_stats(last_stats)}",
+                    first=5,
+                    every=20,
+                )
+
             # Short hold on neon USB garbage, then force a refresh so tiles cannot
             # freeze on last-good for minutes.
-            live_bad = _frame_is_dead(frame) or _frame_is_corrupt(frame)
+            live_bad = last_quality != "ok"
             if live_bad:
                 corrupt_streak += 1
                 if self._last_good is not None and corrupt_streak >= 3:
                     if hold_since is None:
                         hold_since = now
+                        holding = True
+                        self.trace.emit(
+                            f"HOLD last-good start reason={last_quality} {_fmt_stats(last_stats)}"
+                        )
                     if now - hold_since < 1.5:
                         frame = self._last_good
+                        self.trace.bump("hold_frames")
                     else:
+                        self.trace.emit(
+                            f"HOLD expired — forcing live frame reason={last_quality} {_fmt_stats(last_stats)}"
+                        )
                         hold_since = None
+                        holding = False
                         corrupt_streak = 0
                         self._last_good = frame.copy()
+                        self.trace.bump("hold_refresh")
                 elif self._last_good is None:
+                    self.trace.bump("drop_no_last_good")
                     continue
             else:
+                if holding:
+                    self.trace.emit(f"HOLD end — live OK {_fmt_stats(last_stats)}")
                 corrupt_streak = 0
                 hold_since = None
+                holding = False
                 self._last_good = frame.copy()
             
             self.frame_count += 1
@@ -781,10 +919,22 @@ class CameraWorker:
                 self.fps_actual = fps_frame_count / (now - last_fps_time)
                 fps_frame_count = 0
                 last_fps_time = now
-            if now - last_heartbeat >= 60.0:
-                print(
-                    f"[CAM_{self.face}] alive {self.fps_actual:.1f}fps "
-                    f"frames={self.frame_count}"
+            if now - last_heartbeat >= 10.0:
+                laser_n = sum(1 for d in self.last_detections if d.get("laser"))
+                self.trace.emit(
+                    f"HEARTBEAT uptime={now - t0:.0f}s fps={self.fps_actual:.2f} "
+                    f"used_frames={self.frame_count} grab_ok={self.trace.n['grab_ok']} "
+                    f"grab_fail={self.trace.n['grab_fail']} retrieve_ok={self.trace.n['retrieve_ok']} "
+                    f"retrieve_fail={self.trace.n['retrieve_fail']} "
+                    f"dead_black={self.trace.n['dead_black']} "
+                    f"corrupt_neon_dark={self.trace.n['corrupt_neon_dark']} "
+                    f"corrupt_neon={self.trace.n['corrupt_neon']} "
+                    f"hold_frames={self.trace.n['hold_frames']} "
+                    f"hold_refresh={self.trace.n['hold_refresh']} "
+                    f"display_drop={self.trace.n['display_drop']} "
+                    f"result_drop={self.trace.n['result_drop']} "
+                    f"holding={holding} last_q={last_quality} {_fmt_stats(last_stats)} "
+                    f"lasers={laser_n}"
                 )
                 last_heartbeat = now
             
@@ -793,6 +943,7 @@ class CameraWorker:
                     cmd = self.command_queue.get_nowait()
                     if cmd.get('action') == 'set_target':
                         self.target_hole_id = cmd.get('hole_id')
+                        self.trace.emit(f"command set_target hole={self.target_hole_id}")
                 except Exception:
                     pass
 
@@ -809,22 +960,26 @@ class CameraWorker:
                         small = display_frame
                     self.display_queue.put_nowait((f"CAM_{self.face}", small))
                     self.last_display_time = now
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.trace.maybe("display_drop", f"display queue drop: {exc!r}", first=3, every=50)
             
-            self.last_process_time = now
+            t_proc = time.time()
             result = self.process_frame(frame)
+            proc_ms = (time.time() - t_proc) * 1000.0
+            if proc_ms > 80:
+                self.trace.maybe("slow_proc", f"process_frame slow {proc_ms:.0f}ms", first=3, every=20)
             self.last_detections = result['detections']
             try:
                 self.result_queue.put_nowait(result)
-            except Exception:
-                pass
+            except Exception as exc:
+                self.trace.maybe("result_drop", f"result queue drop: {exc!r}", first=3, every=50)
         
         # Cleanup
         if self.cap:
             self.cap.release()
             self.cap = None
-        print(f"[CAM_{self.face}] Worker stopped.")
+        self.trace.emit("Worker stopped.")
+        self.trace.close()
 
     def _emit_ready(self, ok: bool) -> None:
         if self._ready_emitted or self.ready_queue is None:

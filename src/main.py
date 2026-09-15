@@ -111,6 +111,7 @@ def main():
     ready_queue = ctx.Queue()
 
     processes = []
+    worker_faces = []
 
     # ── Dashboard setup ──
     dashboard = None
@@ -350,6 +351,7 @@ def main():
         f"{profile['fourcc']} @ {profile['fps']:.0f} fps "
         f"(edit via Admin, PIN in config/capture_profile.json)"
     )
+    print(f"[Main] Detailed camera logs: {os.path.join(project_root, 'logs', 'camera_face_X.log')}")
 
     for cam in cameras_sorted:
         if not cam.get('enabled', True):
@@ -404,6 +406,7 @@ def main():
             "roi_calib_height": int(cam.get("height", 480)),
             "reject_high_res": False,
             "reject_high_fps": False,
+            "log_dir": os.path.join(project_root, "logs"),
         }
         if cam.get("device_path"):
             capture_settings["device_path"] = cam["device_path"]
@@ -435,6 +438,7 @@ def main():
         )
         p.start()
         processes.append(p)
+        worker_faces.append(str(cam["face"]).upper())
         msg = (
             f"Started worker for Face {cam['face']} "
             f"(USB {cam['usb_index']}, hub {hub_id} {cam.get('hub_key', '')})"
@@ -594,6 +598,8 @@ def main():
             # Populate rule IDs for override dialog
             dashboard.set_rule_ids(engine.get_all_rule_ids())
 
+            last_worker_diag = [0.0]
+
             def poll_queues():
                 """Called ~60 times/sec by QTimer."""
                 # 1. Drain display queue to latest frame per camera (zero lag, no queue buildup)
@@ -710,6 +716,22 @@ def main():
                 alive = [p for p in processes if p.is_alive()]
                 if len(alive) == 0 and not control_event.is_set():
                     print("[Main] All workers stopped unexpectedly.")
+                    logger.log_system("ERROR", "All camera workers stopped unexpectedly")
+                now_w = time.time()
+                if now_w - last_worker_diag[0] >= 10.0:
+                    last_worker_diag[0] = now_w
+                    bits = []
+                    for face, proc in zip(worker_faces, processes):
+                        bits.append(f"{face}={'alive' if proc.is_alive() else 'DEAD'}")
+                    try:
+                        dq = display_queue.qsize() if display_queue else -1
+                        rq = result_queue.qsize()
+                    except (NotImplementedError, OSError):
+                        dq, rq = -1, -1
+                    logger.log_system(
+                        "INFO",
+                        f"Workers {' '.join(bits)} display_q={dq} result_q={rq} alive={len(alive)}/{len(processes)}",
+                    )
 
             timer = QTimer()
             timer.timeout.connect(poll_queues)
