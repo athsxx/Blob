@@ -118,6 +118,63 @@ def manifold_data_subdirectory(manifold: str, config_dir: Optional[str] = None) 
     return m or "DALIA"
 
 
+LAST_SESSION_FILE = "last_session.json"
+FACE_ORDER = "ABCDEF"
+
+
+def face_roi_basename(face: str) -> str:
+    """Face A always uses hole_positions_cam0.json … Face F cam5.json (not USB index)."""
+    letter = str(face).strip().upper()
+    idx = FACE_ORDER.index(letter) if letter in FACE_ORDER else 0
+    return f"hole_positions_cam{idx}.json"
+
+
+def load_last_manifold(config_dir: str, labels: Optional[List[str]] = None) -> str:
+    known = labels or manifold_labels(config_dir)
+    path = os.path.join(config_dir, LAST_SESSION_FILE)
+    saved = ""
+    data = _load_json(path) if os.path.isfile(path) else None
+    if isinstance(data, dict):
+        saved = str(data.get("manifold") or "").strip()
+    if saved and saved in known:
+        return saved
+    if "DALIA" in known:
+        return "DALIA"
+    return known[0] if known else "DALIA"
+
+
+def save_last_manifold(config_dir: str, manifold: str) -> None:
+    path = os.path.join(config_dir, LAST_SESSION_FILE)
+    try:
+        os.makedirs(config_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"manifold": str(manifold).strip()}, f, indent=2)
+            f.write("\n")
+    except OSError:
+        pass
+
+
+def hole_ids_for_face(rules: List[Dict[str, Any]], face: str) -> List[str]:
+    """Unique hole_ids that appear as input or expected output on this face."""
+    want = str(face).strip().upper()
+    names: List[str] = []
+    seen = set()
+    for rule in rules or []:
+        inp = rule.get("input") or {}
+        if str(inp.get("face", "")).upper() == want:
+            hid = str(inp.get("hole_id") or "").strip()
+            if hid and hid not in seen:
+                seen.add(hid)
+                names.append(hid)
+        for out in rule.get("expected_outputs") or []:
+            if str(out.get("face", "")).upper() == want:
+                hid = str(out.get("hole_id") or "").strip()
+                if hid and hid not in seen:
+                    seen.add(hid)
+                    names.append(hid)
+    return names
+
+
 def _load_json(filepath: str) -> Optional[Dict[str, Any]]:
     """
     Load and parse a JSON file.

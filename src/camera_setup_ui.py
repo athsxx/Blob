@@ -8,7 +8,6 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -27,40 +26,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 
-from config_loader import manifold_data_subdirectory
-
-
-def scan_camera_indices() -> List[tuple]:
-    """Return list of (index, opened_ok) for indices 0..9."""
-    try:
-        import cv2
-    except ImportError:
-        return []
-    if sys.platform == "darwin":
-        backend = cv2.CAP_AVFOUNDATION
-    elif sys.platform == "win32":
-        backend = cv2.CAP_DSHOW
-    else:
-        backend = cv2.CAP_ANY
-    out = []
-    for i in range(10):
-        cap = cv2.VideoCapture(i, backend)
-        ok_open = cap.isOpened()
-        can_read = False
-        if ok_open:
-            can_read, _ = cap.read()
-        cap.release()
-        out.append((i, ok_open and can_read))
-    return out
-
-
-class _CameraIndexScanThread(QThread):
-    """Runs scan_camera_indices off the GUI thread."""
-
-    scan_done = pyqtSignal(list)
-
-    def run(self) -> None:
-        self.scan_done.emit(scan_camera_indices())
+from config_loader import face_roi_basename, manifold_data_subdirectory
 
 
 class _FaceAssignScanThread(QThread):
@@ -294,139 +260,8 @@ class FaceAssignWizardDialog(QDialog):
         self.accept()
 
 
-class CameraSetupDialog(QDialog):
-    """Edit usb_index and enabled per face; writes cameras.json."""
-
-    def __init__(self, cameras_file: str, stylesheet: str = "", parent=None):
-        super().__init__(parent)
-        self.cameras_file = cameras_file
-        self.setWindowTitle("Camera USB mapping")
-        self.resize(540, 440)
-        if stylesheet:
-            self.setStyleSheet(stylesheet)
-
-        self._data: Dict[str, Any] = {}
-        self._spin_by_face: Dict[str, QSpinBox] = {}
-        self._enabled_by_face: Dict[str, QCheckBox] = {}
-        self._scan_thread: Optional[_CameraIndexScanThread] = None
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 16, 20, 16)
-        root.setSpacing(12)
-
-        title = QLabel("Map each manifold face to a USB camera index")
-        title.setStyleSheet("color: #f0f6fc; font-size: 14px; font-weight: bold;")
-        root.addWidget(title)
-
-        hint = QLabel(
-            "Default layout: Face A → USB 0 + hole_positions_cam0.json, … Face F → USB 5 + hole_positions_cam5.json. "
-            "Change USB indices only if your wiring differs. Save writes cameras.json; restart the app so workers reload. "
-            "Scan runs in the background so the window stays responsive."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #8b949e; font-size: 12px;")
-        root.addWidget(hint)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: 1px solid #30363d; border-radius: 6px; }")
-        inner = QWidget()
-        form = QFormLayout(inner)
-        form.setSpacing(10)
-
-        if os.path.isfile(cameras_file):
-            try:
-                with open(cameras_file, "r", encoding="utf-8") as f:
-                    self._data = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                self._data = {}
-
-        face_order = "ABCDEF"
-        cams = list(self._data.get("cameras", []))
-        cams.sort(
-            key=lambda c: face_order.index(c["face"])
-            if c.get("face") in face_order
-            else 99
-        )
-        for cam in cams:
-            face = str(cam.get("face", "?"))
-            row = QHBoxLayout()
-            sp = QSpinBox()
-            sp.setRange(0, 20)
-            sp.setValue(int(cam.get("usb_index", 0)))
-            en = QCheckBox("Enabled")
-            en.setChecked(bool(cam.get("enabled", True)))
-            self._spin_by_face[face] = sp
-            self._enabled_by_face[face] = en
-            row.addWidget(sp)
-            row.addWidget(en)
-            row.addStretch()
-            wrap = QWidget()
-            wrap.setLayout(row)
-            form.addRow(f"Face {face}", wrap)
-
-        scroll.setWidget(inner)
-        root.addWidget(scroll, stretch=1)
-
-        self._scan_btn = QPushButton("Scan indices 0–9")
-        self._scan_btn.setObjectName("btnSetup")
-        self._scan_btn.clicked.connect(self._on_scan)
-        root.addWidget(self._scan_btn)
-
-        btn_row = QHBoxLayout()
-        save_btn = QPushButton("Save")
-        save_btn.setObjectName("btnStart")
-        cancel_btn = QPushButton("Close")
-        cancel_btn.setObjectName("btnSetup")
-        save_btn.clicked.connect(self._save)
-        cancel_btn.clicked.connect(self.reject)
-        btn_row.addStretch()
-        btn_row.addWidget(cancel_btn)
-        btn_row.addWidget(save_btn)
-        root.addLayout(btn_row)
-
-    def _on_scan(self):
-        if self._scan_thread is not None and self._scan_thread.isRunning():
-            return
-        self._scan_btn.setEnabled(False)
-        self._scan_thread = _CameraIndexScanThread(self)
-        self._scan_thread.scan_done.connect(self._on_scan_finished)
-        self._scan_thread.finished.connect(self._scan_thread.deleteLater)
-        self._scan_thread.start()
-
-    def _on_scan_finished(self, results: List[tuple]) -> None:
-        self._scan_btn.setEnabled(True)
-        self._scan_thread = None
-        lines = [f"  USB {idx}: {'OK' if ok else '—'}" for idx, ok in results]
-        QMessageBox.information(
-            self,
-            "Camera scan",
-            "Results (quick open + read test):\n\n" + "\n".join(lines),
-        )
-
-    def _save(self):
-        for cam in self._data.get("cameras", []):
-            face = str(cam.get("face", ""))
-            if face in self._spin_by_face:
-                cam["usb_index"] = self._spin_by_face[face].value()
-            if face in self._enabled_by_face:
-                cam["enabled"] = self._enabled_by_face[face].isChecked()
-        try:
-            with open(self.cameras_file, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, indent=2)
-        except OSError as e:
-            QMessageBox.critical(self, "Save failed", str(e))
-            return
-        QMessageBox.information(
-            self,
-            "Saved",
-            f"Wrote:\n{self.cameras_file}\n\nRestart the application for changes to take effect.",
-        )
-        self.accept()
-
-
 class CalibrateRoiDialog(QDialog):
-    """Pick face and launch calibrate.py for the current manifold."""
+    """Lab fallback: pick face and launch calibrate.py after the app has fully quit."""
 
     def __init__(
         self,
@@ -454,7 +289,7 @@ class CalibrateRoiDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
 
-        layout.addWidget(QLabel("Face to calibrate (opens OpenCV window; close it when done):"))
+        layout.addWidget(QLabel("Lab fallback only — quit the inspection app first so USB is free:"))
 
         self.combo = QComboBox()
         face_order = "ABCDEF"
@@ -468,15 +303,16 @@ class CalibrateRoiDialog(QDialog):
             face = cam.get("face")
             if face is None:
                 continue
-            usb = cam.get("usb_index")
             en = cam.get("enabled", True)
             suffix = "" if en else " — disabled"
-            self.combo.addItem(f"Face {face}  (USB {usb}){suffix}", userData=face)
+            roi_name = face_roi_basename(str(face))
+            self.combo.addItem(f"Face {face}  ({roi_name}){suffix}", userData=face)
         layout.addWidget(self.combo)
 
         roi_hint = QLabel(
-            f"Manifold: {self._manifold} — ROI files: config/{self._data_subdir}/hole_positions_camN.json "
-            f"(N = USB index). Values on disk stay the same until you save in the calibration tool."
+            f"Manifold: {self._manifold} — ROI files: config/{self._data_subdir}/"
+            f"hole_positions_camN.json (N is face ordinal: Face A = cam0 … Face F = cam5, not USB index). "
+            "Prefer Admin → Edit hole ROIs while cameras are live."
         )
         roi_hint.setWordWrap(True)
         layout.addWidget(roi_hint)
@@ -498,7 +334,7 @@ class CalibrateRoiDialog(QDialog):
             QMessageBox.warning(self, "Calibrate", "Camera config not found.")
             return
         usb = int(cam.get("usb_index", 0))
-        base = os.path.basename(cam.get("config", "hole_positions_cam0.json"))
+        base = face_roi_basename(str(face))
         roi_path = os.path.normpath(os.path.join(self._config_dir, self._data_subdir, base))
         cal_script = os.path.join(self._project_root, "calibrate.py")
         if not os.path.isfile(cal_script):
@@ -516,20 +352,21 @@ class CalibrateRoiDialog(QDialog):
         QMessageBox.information(
             self,
             "Calibrate",
-            "Calibration tool started in a separate window.\n"
-            "Stop the main inspection first if the camera is already in use.",
+            "Lab calibration tool started in a separate window.\n"
+            "This opens a second camera capture — only use it after fully quitting the inspection app.",
         )
         self.accept()
 
 
 class AdminCaptureDialog(QDialog):
-    """PIN-locked capture profile: resolution, fps, MJPG. Applies on next launch."""
+    """PIN-locked admin hub: capture lock, face assign, in-app ROI editor, lab calibrator."""
 
     def __init__(self, config_dir: str, stylesheet: str = "", parent=None):
         super().__init__(parent)
         self._config_dir = config_dir
-        self.setWindowTitle("Admin — capture lock")
-        self.setMinimumWidth(420)
+        self.requested_action: Optional[str] = None
+        self.setWindowTitle("Admin")
+        self.setMinimumWidth(440)
         if stylesheet:
             self.setStyleSheet(stylesheet)
 
@@ -541,12 +378,12 @@ class AdminCaptureDialog(QDialog):
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(12)
 
-        title = QLabel("Capture lock")
+        title = QLabel("Admin")
         title.setStyleSheet("font-size: 18px; font-weight: 700; color: #f0f6fc;")
         layout.addWidget(title)
         hint = QLabel(
-            "These settings apply to every camera. Unlock with the admin PIN, "
-            "save, then quit and relaunch so workers reopen with the new profile."
+            "Unlock with the PIN to edit hole ROIs, assign camera faces, or change the capture lock. "
+            "Capture-lock changes need a full quit and relaunch."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #8b949e; font-size: 12px;")
@@ -562,6 +399,19 @@ class AdminCaptureDialog(QDialog):
         pin_row.addWidget(self._pin, stretch=1)
         pin_row.addWidget(unlock)
         layout.addLayout(pin_row)
+
+        self._btn_rois = QPushButton("Edit hole ROIs")
+        self._btn_rois.setObjectName("pagePrimary")
+        self._btn_rois.clicked.connect(lambda: self._request("edit_rois"))
+        self._btn_assign = QPushButton("Assign camera faces")
+        self._btn_assign.setObjectName("pageSecondary")
+        self._btn_assign.clicked.connect(lambda: self._request("assign_faces"))
+        self._btn_lab = QPushButton("Lab calibrator (quit app first)")
+        self._btn_lab.setObjectName("pageSecondary")
+        self._btn_lab.clicked.connect(lambda: self._request("lab_calibrate"))
+        layout.addWidget(self._btn_rois)
+        layout.addWidget(self._btn_assign)
+        layout.addWidget(self._btn_lab)
 
         form = QFormLayout()
         self._size = QComboBox()
@@ -579,8 +429,8 @@ class AdminCaptureDialog(QDialog):
         form.addRow("Format", self._fourcc)
         layout.addLayout(form)
 
-        self._save = QPushButton("Save and lock")
-        self._save.setObjectName("pagePrimary")
+        self._save = QPushButton("Save capture lock")
+        self._save.setObjectName("pageSecondary")
         self._save.clicked.connect(self._on_save)
         layout.addWidget(self._save)
 
@@ -588,10 +438,17 @@ class AdminCaptureDialog(QDialog):
         self._load_values()
         self._pin.returnPressed.connect(self._unlock)
 
+    def _request(self, action: str) -> None:
+        self.requested_action = action
+        self.accept()
+
     def _set_form_enabled(self, on: bool) -> None:
         self._size.setEnabled(on)
         self._fps.setEnabled(on)
         self._save.setEnabled(on)
+        self._btn_rois.setEnabled(on)
+        self._btn_assign.setEnabled(on)
+        self._btn_lab.setEnabled(on)
 
     def _load_values(self) -> None:
         w = int(self._profile.get("width", 320))
@@ -606,7 +463,7 @@ class AdminCaptureDialog(QDialog):
             return
         self._set_form_enabled(True)
         self._pin.clear()
-        QMessageBox.information(self, "Admin", "Unlocked. Save after you change settings.")
+        QMessageBox.information(self, "Admin", "Unlocked.")
 
     def _on_save(self) -> None:
         from capture_profile import save_capture_profile

@@ -56,16 +56,18 @@ class Calibrator:
                         cx, cy, r = c
                         name = f"H{i+1}"
                     elif isinstance(c, dict):
-                        # New format: {"name": "H1", "coords": [cx, cy, r]}
                         name = c.get('name', f"H{i+1}")
                         cx, cy, r = c['coords']
+                        w = c.get('w', r)
+                        h = c.get('h', r)
+                        angle = c.get('angle', 0)
                     else:
                         continue
                     self.ellipses.append({
                         'name': name,
                         'cx': cx, 'cy': cy,
-                        'w': r, 'h': r,
-                        'angle': 0
+                        'w': w, 'h': h,
+                        'angle': angle
                     })
                 
                 # Fallback: also try rois format for backward compatibility
@@ -104,7 +106,8 @@ class Calibrator:
             }
             circles.append(entry)
         with open(CONFIG_PATH, 'w') as f:
-            json.dump({"circles": circles}, f, indent=2)
+            h, w = (self.original_frame.shape[:2] if self.original_frame is not None else (480, 640))
+            json.dump({"calib_width": int(w), "calib_height": int(h), "circles": circles}, f, indent=2)
         print(f"[SUCCESS] Saved {len(circles)} ROIs to {CONFIG_PATH}")
 
     def get_ellipse_at(self, x, y):

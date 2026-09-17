@@ -40,88 +40,55 @@ All commands below assume the repo root is your current directory (`Blob/`).
 
 **Working directory:** Prefer running from the **repo root** so relative paths in logs and tools stay consistent. The entry point lives at `src/main.py`.
 
-### Helper / diagnostic scripts (repo root)
+### Helper / diagnostic scripts (engineer only)
+
+These are **not** the daily operator path. Prefer **Admin → Assign camera faces** and **Admin → Edit hole ROIs** inside `python src/main.py`.
 
 | Command | Purpose |
 |--------|---------|
 | `python diagnose_cameras.py` | Scan camera indices and capabilities |
-| `python show_camera_indices.py` | Save labeled snapshots (e.g. under `camera_indices_check/`) to match **USB index → physical camera** |
-| `python calibrate.py --cam N --config PATH` | ROI calibration for USB index `N`, writing to `PATH` (see [ROI calibration](#roi-calibration)) |
-| `python display_cameras_15fps.py` | Standalone multi-camera viewer |
-| `python list_mac_cameras.py` | macOS: list AVFoundation devices |
+| `python calibrate.py --cam N --config PATH` | Lab ROI tool — **quit `main.py` first**; Face A = `hole_positions_cam0.json` (not USB index) |
 
 ---
 
 ## Operator flow (exact UI sequence)
 
 1. **Launch**  
-   Run `python src/main.py`.
+   Run `python src/main.py`. If `camera_port_map.json` is missing (first Windows install), complete **Assign camera faces**.
 
-2. **Mode (screen 1)**  
-   Choose **Sequential inspection** (full guided sequence) or **Manual inspection** (pick one rule after setup).
+2. **Mode**  
+   Choose **Sequential** (full guided sequence) or **Manual (single rule)** (testing).
 
-3. **Manifold (screen 2)**  
-   Choose **DALIA**, **Manifold 2**, or **Manifold 3**.  
-   Use **← Back** to return to mode.  
-   **Manifold 2 / 3** currently use the same **rules** and **ROI file folder on disk** as **DALIA** (`config/DALIA/`) until separate manifold folders are added.
+3. **Manifold**  
+   Sequential with more than one model: pick **DALIA** (or last used). A single model skips this page. Manual: pick manifold, face, and rule on the next page.
 
-4. **Manual only (screen 3)**  
-   If you chose manual: pick **manifold**, **input face**, **rule**, then **Continue**. **← Back** returns to manifold selection.
+4. **Live dashboard**  
+   Wait for **Opening cameras — Face X (n of 6)**. Do not close the window. **START** stays off until workers report ready.
 
-5. **Before live inspection (screen 4 — pre-inspection)**  
-   - **Calibrate ROIs…** — optional; opens the calibration dialog (see below). **Recommended** if you need to adjust holes; cameras are usually **not** opened by the main app yet, so the USB device is free.  
-   - **Continue to live inspection** — proceeds to the live dashboard and allows `main.py` to finish setup (logic engine, workers, etc.).  
-   - **← Back** — returns to manifold (sequential) or manual setup (manual).
+5. **START**  
+   Starts **logic only** (cameras are already open). Follow guided steps. **OVERRIDE** stays on the bar for testing.
 
-6. **Live dashboard (screen 5)**  
-   **START / STOP / PAUSE / RESUME**, step list, instructions, camera tiles.  
-   **USB map** and **Calibrate ROIs** remain available here. If workers already hold the cameras, close or stop using the camera before calibrating the same index in OpenCV.
+6. **Admin (PIN)**  
+   **Edit hole ROIs** (freeze live frame, drag ellipses, Save — cameras stay up). **Assign camera faces** (quit and relaunch after saving). Capture lock still needs a full relaunch.
 
-7. **Sequential**  
-   Follow guided steps: insert laser where indicated; the system checks expected outputs and records PASS/FAIL.
-
-8. **Logs**  
-   Under `logs/` (e.g. CSV and JSONL per day) — use for traceability and analysis.
+7. **Logs**  
+   Under `logs/` (CSV / JSONL per day, plus `camera_face_X.log`).
 
 ---
 
 ## ROI calibration
 
-### When it runs
+Shop-floor path: **Admin → PIN → Edit hole ROIs** after cameras are open. Snapshot comes from the live worker (no second `VideoCapture`). Hole names come from `connectivity_rules.json`. Face A writes `hole_positions_cam0.json` … Face F `cam5.json`. Save writes `calib_width` / `calib_height` and reloads masks without restarting.
 
-- **Only when you start it** — either **Calibrate ROIs…** on the **pre-inspection** page, **Calibrate ROIs** on the **live dashboard**, or by running `calibrate.py` yourself.
-
-### Where it saves
-
-- The UI launches `calibrate.py` with an explicit `--config` path, typically:  
-  `config/<manifold-folder>/hole_positions_camN.json`  
-  where **N** matches the **USB index** for that face in `cameras.json` (convention: Face **A → cam0**, … **F → cam5**).  
-- **Manifold 2 / 3** still read/write ROI files under **`config/DALIA/`** (same as rules) via `manifold_data_subdirectory()` in `src/config_loader.py`.
-
-### Persisting changes
-
-- In the OpenCV calibration window, press **`s`** to **save** to the JSON file.  
-- **`q`** quits **without** auto-save.  
-- Unsaved edits are lost.
-
-### `calibrate.py` controls (reference)
-
-- **Drag** — move selected ellipse  
-- **`+` / `-`** — width  
-- **`[` / `]`** — height  
-- **Left / Right arrow** — rotate ±5°  
-- **`a`** add · **`d`** delete · **`c`** copy · **`n`** rename  
-- **`s`** **SAVE** · **`q`** quit · **Space** refresh frame  
+Lab fallback (app fully quit): `python calibrate.py --cam N --config config/DALIA/hole_positions_cam0.json` for Face A. `N` is the USB index; the filename `cam0` is the **face ordinal**.
 
 ### Manual CLI example
 
-From repo root, after you know the absolute path to the ROI file:
+From repo root, **after quitting** `main.py`:
 
 ```bash
-python calibrate.py --cam 0 --config /absolute/path/to/Blob/config/DALIA/hole_positions_cam0.json
+python calibrate.py --cam 0 --config config/DALIA/hole_positions_cam0.json
 ```
-
-If you omit `--config`, `calibrate.py` tries to resolve the file from `config/cameras.json` (may not match manifold-specific paths — prefer explicit `--config` when using DALIA subfolder layouts).
 
 ---
 
@@ -131,7 +98,7 @@ If you omit `--config`, `calibrate.py` tries to resolve the file from `config/ca
 
 - Maps **`usb_index`** → **`face`** (A–F) and **`config`** (filename like `hole_positions_cam0.json`).  
 - **`enabled: false`** skips that camera (worker not started).  
-- **USB map** in the dashboard writes this file; **restart the application** after saving so workers reload.
+- **Admin → Assign camera faces** writes the port map; **quit and relaunch** after saving so workers reopen the correct USB indices.
 
 ### Standard layout (recommended)
 

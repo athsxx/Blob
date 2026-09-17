@@ -3,10 +3,13 @@ Operator Dashboard — PyQt6  (Guided Inspection Mode)
 
 Stacked pages (QStackedWidget indices):
   0 — Mode: Sequential vs Manual inspection
-  1 — Manifold: DALIA / Manifold 2 / Manifold 3
-  2 — Manual setup only: dropdowns for manifold, input face, rule (then Continue)
-  3 — Pre-inspection: assign camera faces, optional ROI calibration, then Continue
-  4 — Live dashboard (cameras, steps, START/STOP, etc.)
+  1 — Manifold: DALIA / Manifold 2 / Manifold 3 (sequential, multiple models)
+  2 — Manual setup only: dropdowns for manifold, input face, rule
+  3 — Pre-inspection: first-install assign faces (skipped when port map exists)
+  4 — Live dashboard (cameras, START/STOP, Admin)
+
+Daily path with a saved port map: Mode → (manifold if more than one) → live → wait for cameras → START.
+Assign faces / Edit hole ROIs live under Admin (PIN). OVERRIDE stays on the live bar.
 
 3-column layout:
   ┌──────────────────────────────────────────────────────────────┐
@@ -27,15 +30,18 @@ Stacked pages (QStackedWidget indices):
 
 import json
 import os
-import subprocess
 import sys
-import time
 import numpy as np
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Set
 
 from logic_engine import rule_has_unavailable_output
-from config_loader import manifold_labels, manifold_folder_for_label
+from config_loader import (
+    manifold_labels,
+    manifold_folder_for_label,
+    load_last_manifold,
+    save_last_manifold,
+)
 
 # Faces with cameras (matches main.py sequential guided filter)
 MANUAL_AVAILABLE_FACES: Set[str] = {"A", "B", "C", "D", "E", "F"}
@@ -57,20 +63,24 @@ except ImportError:
 
 if HAS_PYQT6:
     try:
-        from camera_setup_ui import CameraSetupDialog, CalibrateRoiDialog, FaceAssignWizardDialog, AdminCaptureDialog
+        from camera_setup_ui import CalibrateRoiDialog, FaceAssignWizardDialog, AdminCaptureDialog
         from manifold_setup_ui import AddManifoldDialog
+        from session_overlay import SessionBusyOverlay
+        from roi_editor import RoiEditorDialog
     except ImportError:
-        CameraSetupDialog = None  # type: ignore
         CalibrateRoiDialog = None  # type: ignore
         FaceAssignWizardDialog = None  # type: ignore
         AdminCaptureDialog = None  # type: ignore
         AddManifoldDialog = None  # type: ignore
+        SessionBusyOverlay = None  # type: ignore
+        RoiEditorDialog = None  # type: ignore
 else:
-    CameraSetupDialog = None  # type: ignore
     CalibrateRoiDialog = None  # type: ignore
     FaceAssignWizardDialog = None  # type: ignore
     AdminCaptureDialog = None  # type: ignore
     AddManifoldDialog = None  # type: ignore
+    SessionBusyOverlay = None  # type: ignore
+    RoiEditorDialog = None  # type: ignore
 
 
 # ──────────────────────────────────────────────
@@ -1171,7 +1181,6 @@ class PreInspectionSetupPage(QWidget):
 
     sig_continue = pyqtSignal()
     sig_back = pyqtSignal()
-    sig_calibrate = pyqtSignal()
     sig_assign = pyqtSignal()
     sig_admin = pyqtSignal()
 
@@ -1190,10 +1199,10 @@ class PreInspectionSetupPage(QWidget):
         kick = QLabel("READY")
         kick.setObjectName("pageKicker")
         kick.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title = QLabel("Before live inspection")
+        title = QLabel("First-time camera setup")
         title.setObjectName("pageTitleMain")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub = QLabel("Assign cameras to faces A–F, lock capture settings if needed, optionally calibrate ROIs, then continue. Workers start after Continue.")
+        sub = QLabel("Assign each USB camera to a face. Hole ROIs are edited later from Admin after cameras are open.")
         sub.setObjectName("pageSubtitle")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setWordWrap(True)
@@ -1230,8 +1239,8 @@ class PreInspectionSetupPage(QWidget):
             "ROI files stay bound to the face letter: Face A loads "
             "<span style='color:#79c0ff;'>hole_positions_cam0.json</span>, Face B "
             "<span style='color:#79c0ff;'>hole_positions_cam1.json</span>, and so on — "
-            "even if Windows later changes the USB index. Unassigned faces are disabled "
-            "and will not show a live feed."
+            "even if Windows later changes the USB index. After Continue, wait for cameras "
+            "to finish opening, then use <b>Admin → Edit hole ROIs</b> to place holes."
         )
         cvl.addWidget(explain)
         bl.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -1244,12 +1253,7 @@ class PreInspectionSetupPage(QWidget):
         btn_assign.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_assign.setMinimumWidth(200)
         btn_assign.clicked.connect(self.sig_assign.emit)
-        btn_cal = QPushButton("Calibrate ROIs")
-        btn_cal.setObjectName("pageSecondary")
-        btn_cal.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_cal.setMinimumWidth(200)
-        btn_cal.clicked.connect(self.sig_calibrate.emit)
-        btn_admin = QPushButton("Admin (capture lock)")
+        btn_admin = QPushButton("Admin")
         btn_admin.setObjectName("pageSecondary")
         btn_admin.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_admin.setMinimumWidth(200)
@@ -1260,7 +1264,6 @@ class PreInspectionSetupPage(QWidget):
         btn_go.setMinimumWidth(200)
         btn_go.clicked.connect(self.sig_continue.emit)
         actions.addWidget(btn_assign)
-        actions.addWidget(btn_cal)
         actions.addWidget(btn_admin)
         actions.addWidget(btn_go)
         actions.addStretch(1)
@@ -1565,6 +1568,14 @@ class DashboardWindow(QMainWindow):
         self.custom_rule_id: Optional[str] = None
         self._prep_back_target: int = 1  # stacked index: 1 = manifold, 2 = manual setup
         self._setup_event_loop = None  # QEventLoop — quit if window closed during setup (avoids hang)
+        self._handshake_active = False
+        self._cameras_ready = False
+        self.shutdown_requested = False
+        self._roi_session_open = False
+        self._comm_queues: Dict[str, Any] = {}
+        self._snapshot_queue = None
+        self._failed_faces: List[str] = []
+        self._busy_overlay = None
 
         # ── Central Widget & Global Layout ──
         central = QWidget()
@@ -1631,7 +1642,6 @@ class DashboardWindow(QMainWindow):
         self.prep_page = PreInspectionSetupPage(self)
         self.prep_page.sig_continue.connect(self._on_prep_continue)
         self.prep_page.sig_back.connect(self._on_prep_back)
-        self.prep_page.sig_calibrate.connect(self._on_prep_calibrate)
         self.prep_page.sig_assign.connect(self._on_assign_faces)
         self.prep_page.sig_admin.connect(self._on_admin_capture)
         self.stacked_widget.addWidget(self.prep_page)
@@ -1652,7 +1662,7 @@ class DashboardWindow(QMainWindow):
         cl.setContentsMargins(16, 8, 16, 8)
         cl.setSpacing(10)
 
-        self.btn_start  = self._make_btn("▶  START",   "btnStart",  self._on_start)
+        self.btn_start  = self._make_btn("▶  START",   "btnStart",  self._on_start, enabled=False)
         self.btn_stop   = self._make_btn("■  STOP",    "btnStop",   self._on_stop,   enabled=False)
         self.btn_pause  = self._make_btn("⏸  PAUSE",   "btnPause",  self._on_pause,  enabled=False)
         self.btn_resume = self._make_btn("⏵  RESUME",  "btnResume", self._on_resume, enabled=False)
@@ -1664,11 +1674,7 @@ class DashboardWindow(QMainWindow):
         cl.addWidget(self.btn_override)
 
         cl.addSpacing(8)
-        self.btn_usb_map = self._make_btn("Assign faces", "btnSetup", self._on_assign_faces, enabled=bool(self.config_dir or self.cameras_file))
-        self.btn_calibrate = self._make_btn("Calibrate ROIs", "btnSetup", self._on_calibrate_rois, enabled=True)
         self.btn_admin = self._make_btn("Admin", "btnSetup", self._on_admin_capture, enabled=True)
-        cl.addWidget(self.btn_usb_map)
-        cl.addWidget(self.btn_calibrate)
         cl.addWidget(self.btn_admin)
 
         cl.addStretch()
@@ -1769,11 +1775,47 @@ class DashboardWindow(QMainWindow):
         self._tick_clock()
 
         self.stacked_widget.setCurrentIndex(0)
+        if SessionBusyOverlay is not None:
+            self._busy_overlay = SessionBusyOverlay(central)
         self.showMaximized()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._busy_overlay is not None and self.centralWidget() is not None:
+            self._busy_overlay.setGeometry(self.centralWidget().rect())
+
+    def _port_map_ready(self) -> bool:
+        from camera_indexer import check_port_map_exists
+
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        return bool(check_port_map_exists(cdir))
+
+    def _go_live_or_prep(self, manifold: str, prep_back: int) -> None:
+        self.selected_manifold = manifold
+        if self._port_map_ready():
+            self._enter_live_dashboard(manifold)
+        else:
+            self._prep_back_target = prep_back
+            self.stacked_widget.setCurrentIndex(3)
 
     def _on_mode_selected(self, mode: str):
         self.selected_mode = mode
-        self.stacked_widget.setCurrentIndex(1)
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        labels = manifold_labels(cdir)
+        last = load_last_manifold(cdir, labels)
+        if mode == "custom":
+            self.custom_rule_id = None
+            self.manual_setup_page.set_manifold_items(labels, last)
+            self.manual_setup_page.set_initial_manifold(last)
+            self.manual_setup_page.reload_from_disk()
+            self.stacked_widget.setCurrentIndex(2)
+            return
+        if len(labels) > 1:
+            self.manifold_page.set_manifold_items(labels, last)
+            self.stacked_widget.setCurrentIndex(1)
+            return
+        self.custom_rule_id = None
+        self._go_live_or_prep(labels[0] if labels else last, 0)
 
     def _on_manifold_selected(self, manifold: str):
         self.selected_manifold = manifold
@@ -1784,8 +1826,7 @@ class DashboardWindow(QMainWindow):
             self.stacked_widget.setCurrentIndex(2)
         else:
             self.custom_rule_id = None
-            self._prep_back_target = 1
-            self.stacked_widget.setCurrentIndex(3)
+            self._go_live_or_prep(manifold, 1)
 
     def _on_manifold_back(self):
         self.stacked_widget.setCurrentIndex(0)
@@ -1812,7 +1853,7 @@ class DashboardWindow(QMainWindow):
         self.manual_setup_page.set_manifold_items(labels)
 
     def _on_manual_setup_back(self):
-        self.stacked_widget.setCurrentIndex(1)
+        self.stacked_widget.setCurrentIndex(0)
 
     def _on_manual_setup_continue(self):
         rid = self.manual_setup_page.get_rule_id()
@@ -1820,8 +1861,7 @@ class DashboardWindow(QMainWindow):
             return
         self.custom_rule_id = rid
         self.selected_manifold = self.manual_setup_page.get_manifold()
-        self._prep_back_target = 2
-        self.stacked_widget.setCurrentIndex(3)
+        self._go_live_or_prep(self.selected_manifold, 2)
 
     def _on_prep_continue(self):
         m = (self.selected_manifold or "").strip()
@@ -1837,16 +1877,86 @@ class DashboardWindow(QMainWindow):
     def _on_prep_back(self):
         self.stacked_widget.setCurrentIndex(self._prep_back_target)
 
-    def _on_prep_calibrate(self):
-        self._open_calibrate_roi_dialog()
+    def bind_worker_ipc(self, comm_queues: Dict[str, Any], snapshot_queue) -> None:
+        self._comm_queues = comm_queues or {}
+        self._snapshot_queue = snapshot_queue
+
+    def _lock_live_bar(self, locked: bool) -> None:
+        if locked:
+            for b in (self.btn_start, self.btn_stop, self.btn_pause, self.btn_resume, self.btn_override, self.btn_admin):
+                b.setEnabled(False)
+            return
+        self.btn_admin.setEnabled(True)
+        if self._cameras_ready and not self.btn_stop.isEnabled():
+            self.btn_start.setEnabled(True)
+
+    def begin_camera_handshake(self, total: int) -> None:
+        self._handshake_active = True
+        self._cameras_ready = False
+        self._failed_faces = []
+        self._lock_live_bar(True)
+        if self._busy_overlay is not None:
+            self._busy_overlay.show_message(
+                "Opening cameras",
+                f"Face A (1 of {max(total, 1)}). Do not close this window.",
+            )
+
+    def report_camera_opening(self, face: str, index: int, total: int) -> None:
+        if self._busy_overlay is not None:
+            self._busy_overlay.show_message(
+                "Opening cameras",
+                f"Face {face} ({index} of {total}). Do not close this window.",
+            )
+
+    def report_camera_result(self, face: str, ok: bool) -> None:
+        if ok:
+            return
+        self._failed_faces.append(str(face).upper())
+        if self._busy_overlay is not None:
+            self._busy_overlay.show_message(
+                "Opening cameras",
+                f"Face {face} did not open. Continuing with remaining cameras.",
+            )
+
+    def finish_camera_handshake(self) -> None:
+        self._handshake_active = False
+        self._cameras_ready = True
+        if self._busy_overlay is not None:
+            self._busy_overlay.clear()
+        self._lock_live_bar(False)
+        failed = ", ".join(self._failed_faces)
+        if failed:
+            QMessageBox.warning(
+                self,
+                "Some cameras did not open",
+                f"These faces did not open: {failed}.\n"
+                "The others stay live. START is available for the faces that opened.",
+            )
+
+    def _inspection_is_running(self) -> bool:
+        return self.btn_stop.isEnabled() and not self.btn_resume.isEnabled()
 
     def _on_admin_capture(self):
+        if self._handshake_active:
+            QMessageBox.information(self, "Admin", "Wait until cameras have finished opening.")
+            return
         if not HAS_PYQT6 or AdminCaptureDialog is None:
             QMessageBox.warning(self, "Admin", "Admin UI is unavailable.")
             return
         cdir = self.config_dir or os.path.join(self.project_root, "config")
         dlg = AdminCaptureDialog(cdir, DARK_STYLESHEET, self)
-        dlg.exec()
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        action = getattr(dlg, "requested_action", None)
+        if action == "edit_rois":
+            self._on_edit_hole_rois()
+        elif action == "assign_faces":
+            self._on_assign_faces()
+        elif action == "lab_calibrate":
+            self._open_lab_calibrator()
+
+    def _workers_live(self) -> bool:
+        return bool(self._comm_queues)
 
     def _on_assign_faces(self):
         """Open the in-app face assignment wizard (same persist path as the CLI tool)."""
@@ -1854,19 +1964,20 @@ class DashboardWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Assign faces",
-                "Face assignment UI is unavailable. Run:\n  python tools/assign_camera_faces.py",
+                "Face assignment UI is unavailable.",
             )
             return
+        if self._roi_session_open:
+            QMessageBox.information(self, "Assign faces", "Close the ROI editor first.")
+            return
         cdir = self.config_dir or os.path.join(self.project_root, "config")
-        live = self.stacked_widget.currentIndex() == 4
-        if live:
+        if self._workers_live() or self.stacked_widget.currentIndex() == 4:
             go = QMessageBox.question(
                 self,
                 "Assign camera faces",
-                "Live camera workers may already hold the USB devices. "
-                "The scan needs exclusive access and works best before Continue "
-                "(on the pre-inspection page), or after fully quitting the app.\n\n"
-                "Scan anyway?",
+                "Live camera workers already hold the USB devices. "
+                "The scan opens extra cameras and can black out the live tiles.\n\n"
+                "Quit the app and relaunch to assign faces safely.\n\nScan anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -1878,8 +1989,7 @@ class DashboardWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Assignment saved",
-                "Camera-face mapping saved. If inspection workers are already running, "
-                "quit and relaunch so they reopen the correct USB indices.",
+                "Camera-face mapping saved. Quit and relaunch so workers reopen the correct USB indices.",
             )
 
     def apply_resolved_cameras(self, cameras: List[Dict[str, Any]]) -> None:
@@ -1913,6 +2023,62 @@ class DashboardWindow(QMainWindow):
                 pass
         return list(self._cameras_list)
 
+    def _open_lab_calibrator(self):
+        if self._workers_live() or self._handshake_active:
+            QMessageBox.warning(
+                self,
+                "Lab calibrator",
+                "Quit this app completely before using the OpenCV lab tool. "
+                "While cameras are live, use Admin → Edit hole ROIs instead.",
+            )
+            return
+        self._open_calibrate_roi_dialog()
+
+    def _on_edit_hole_rois(self):
+        if RoiEditorDialog is None:
+            QMessageBox.warning(self, "Edit hole ROIs", "ROI editor is unavailable.")
+            return
+        if self._handshake_active or not self._cameras_ready:
+            QMessageBox.information(
+                self,
+                "Edit hole ROIs",
+                "Wait until the camera-open overlay finishes.",
+            )
+            return
+        if self._inspection_is_running():
+            QMessageBox.warning(
+                self,
+                "Edit hole ROIs",
+                "PAUSE or STOP inspection before editing hole ROIs.",
+            )
+            return
+        manifold = (self.selected_manifold or "").strip()
+        if not manifold:
+            QMessageBox.warning(self, "Edit hole ROIs", "Select a manifold first.")
+            return
+        if not self._comm_queues or self._snapshot_queue is None:
+            QMessageBox.warning(
+                self,
+                "Edit hole ROIs",
+                "Camera workers are not bound yet. Wait for live tiles, then try again.",
+            )
+            return
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        self._roi_session_open = True
+        try:
+            dlg = RoiEditorDialog(
+                manifold,
+                cdir,
+                self._all_camera_configs(),
+                self._comm_queues,
+                self._snapshot_queue,
+                DARK_STYLESHEET,
+                self,
+            )
+            dlg.exec()
+        finally:
+            self._roi_session_open = False
+
     def _open_calibrate_roi_dialog(self):
         if not HAS_PYQT6 or CalibrateRoiDialog is None:
             return
@@ -1941,10 +2107,13 @@ class DashboardWindow(QMainWindow):
 
     def _enter_live_dashboard(self, manifold: str):
         self.selected_manifold = manifold
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        save_last_manifold(cdir, manifold)
         self.stacked_widget.setCurrentIndex(4)
         self.global_header.show()
         self.header_status.show()
         self.clock_lbl.show()
+        self.btn_start.setEnabled(False)
         from PyQt6.QtWidgets import QApplication
         QApplication.processEvents()  # Paint dashboard before main.py continues
         self.sig_manifold_selected.emit(manifold)
@@ -1991,6 +2160,23 @@ class DashboardWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         from PyQt6.QtCore import QEventLoop, QTimer
+
+        if self._handshake_active:
+            box = QMessageBox(self)
+            box.setWindowTitle("Cameras are still opening")
+            box.setText("Cameras are still opening. Stop and quit?")
+            box.setInformativeText("Closing now can leave USB cameras in a bad state.")
+            stay = box.addButton("Stay", QMessageBox.ButtonRole.RejectRole)
+            quit_btn = box.addButton("Stop and quit", QMessageBox.ButtonRole.AcceptRole)
+            box.setDefaultButton(stay)
+            box.exec()
+            if box.clickedButton() != quit_btn:
+                event.ignore()
+                return
+            self.shutdown_requested = True
+            self._handshake_active = False
+            if self._busy_overlay is not None:
+                self._busy_overlay.clear()
 
         loop = getattr(self, "_setup_event_loop", None)
         if loop is not None and isinstance(loop, QEventLoop) and loop.isRunning():
@@ -2154,6 +2340,13 @@ class DashboardWindow(QMainWindow):
     # ── Control button handlers ──────────────────
 
     def _on_start(self):
+        if not self._cameras_ready or self._handshake_active:
+            QMessageBox.information(
+                self,
+                "START",
+                "Wait until cameras have finished opening.",
+            )
+            return
         self.sig_start.emit()
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -2169,7 +2362,7 @@ class DashboardWindow(QMainWindow):
 
     def _on_stop(self):
         self.sig_stop.emit()
-        self.btn_start.setEnabled(True)
+        self.btn_start.setEnabled(self._cameras_ready)
         self.btn_stop.setEnabled(False)
         self.btn_pause.setEnabled(False)
         self.btn_resume.setEnabled(False)
@@ -2228,12 +2421,9 @@ class DashboardWindow(QMainWindow):
                 self,
                 "Camera faces not assigned",
                 "The inspection system needs a camera-face mapping before it can open USB cameras.\n"
-                "Use Assign camera faces, or run:\n  python tools/assign_camera_faces.py",
+                "Use Admin → Assign camera faces after launch, or complete this wizard now.",
             )
         return saved
-
-    def _on_calibrate_rois(self):
-        self._open_calibrate_roi_dialog()
 
 
 # ──────────────────────────────────────────────

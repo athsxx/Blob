@@ -159,7 +159,8 @@ class CameraWorker:
                  hub_id: Optional[int] = None,
                  open_semaphore=None,
                  command_queue=None,
-                 ready_queue=None):
+                 ready_queue=None,
+                 snapshot_queue=None):
         """
         Args:
             usb_index: USB camera index (0-5)
@@ -168,6 +169,7 @@ class CameraWorker:
             result_queue: Multiprocessing queue for detection results
             control_event: Event to signal shutdown
             display_queue: Optional queue for frames to display
+            snapshot_queue: Optional queue for snapshot / reload_rois acks (no extra VideoCapture)
         """
         self.usb_index = usb_index
         self.face = face
@@ -180,6 +182,7 @@ class CameraWorker:
         self.open_semaphore = open_semaphore
         self.command_queue = command_queue
         self.ready_queue = ready_queue
+        self.snapshot_queue = snapshot_queue
         log_dir = str(self.capture_settings.get("log_dir") or "")
         if not log_dir:
             log_dir = os.path.abspath(os.path.join(os.path.dirname(self.config_file), "..", "..", "logs"))
@@ -262,7 +265,12 @@ class CameraWorker:
                 data = json.load(f)
             
             raw_circles = data.get('circles', [])
+            calib_w = data.get('calib_width')
+            calib_h = data.get('calib_height')
+            if calib_w and calib_h:
+                self._roi_calib = (int(calib_w), int(calib_h))
             self.rois = []
+            self.detection_history = {}
             
             for i, c in enumerate(raw_circles):
                 if isinstance(c, list):
@@ -939,13 +947,12 @@ class CameraWorker:
                 last_heartbeat = now
             
             if self.command_queue:
-                try:
-                    cmd = self.command_queue.get_nowait()
-                    if cmd.get('action') == 'set_target':
-                        self.target_hole_id = cmd.get('hole_id')
-                        self.trace.emit(f"command set_target hole={self.target_hole_id}")
-                except Exception:
-                    pass
+                while True:
+                    try:
+                        cmd = self.command_queue.get_nowait()
+                    except Exception:
+                        break
+                    self._handle_command(cmd)
 
             if self.display_queue:
                 try:
@@ -981,6 +988,53 @@ class CameraWorker:
         self.trace.emit("Worker stopped.")
         self.trace.close()
 
+    def _send_worker_event(self, payload: Dict[str, Any]) -> None:
+        if self.snapshot_queue is None:
+            return
+        try:
+            self.snapshot_queue.put_nowait(payload)
+        except Exception as exc:
+            self.trace.maybe("worker_event_drop", f"event queue drop: {exc!r}", first=3, every=20)
+
+    def _handle_command(self, cmd: Optional[Dict[str, Any]]) -> None:
+        if not cmd:
+            return
+        action = cmd.get("action")
+        if action == "set_target":
+            self.target_hole_id = cmd.get("hole_id")
+            self.trace.emit(f"command set_target hole={self.target_hole_id}")
+            return
+        if action == "snapshot":
+            frame = self._last_good
+            if frame is None:
+                self._send_worker_event({"action": "snapshot", "face": self.face, "ok": False})
+                self.trace.emit("command snapshot: no last-good frame")
+                return
+            h, w = frame.shape[:2]
+            self._send_worker_event({
+                "action": "snapshot",
+                "face": self.face,
+                "ok": True,
+                "width": int(w),
+                "height": int(h),
+                "frame": frame.copy(),
+            })
+            self.trace.emit(f"command snapshot {w}x{h}")
+            return
+        if action == "reload_rois":
+            ok = self.load_rois()
+            if self._frame_size:
+                self._build_roi_masks(self._frame_size[0], self._frame_size[1])
+            self._send_worker_event({
+                "action": "reload_rois",
+                "face": self.face,
+                "ok": bool(ok),
+                "count": len(self.rois),
+            })
+            self.trace.emit(f"command reload_rois ok={ok} n={len(self.rois)}")
+            return
+        self.trace.emit(f"command ignored action={action!r}")
+
     def _emit_ready(self, ok: bool) -> None:
         if self._ready_emitted or self.ready_queue is None:
             return
@@ -1011,7 +1065,8 @@ def camera_worker_process(usb_index: int, face: str, config_file: str,
                           hub_id: Optional[int] = None,
                           open_semaphore=None,
                           command_queue=None,
-                          ready_queue=None):
+                          ready_queue=None,
+                          snapshot_queue=None):
     """
     Entry point for multiprocessing.Process target.
     """
@@ -1027,5 +1082,6 @@ def camera_worker_process(usb_index: int, face: str, config_file: str,
         open_semaphore=open_semaphore,
         command_queue=command_queue,
         ready_queue=ready_queue,
+        snapshot_queue=snapshot_queue,
     )
     worker.run()

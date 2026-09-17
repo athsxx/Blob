@@ -41,27 +41,15 @@ python diagnose_cameras.py
 
 ---
 
-## 4. Calibration (one camera at a time)
+## 4. Hole ROIs (after cameras are open)
 
-Calibration saves to the config file for that camera (from `config/cameras.json`). Example for cameras 0–4 (Face F is disabled, so often only 0–4 are used):
-
-```bash
-python calibrate.py --cam 0
-python calibrate.py --cam 1
-python calibrate.py --cam 2
-python calibrate.py --cam 3
-python calibrate.py --cam 4
-```
-
-**In the calibration window:**  
-- Move/resize/rotate ellipses, add/delete/rename holes.  
-- **`s`** = save, **`q`** = quit.
-
-To save to a specific file instead of the one from `cameras.json`:
+In the app: **Admin → Edit hole ROIs**. Quit `main.py` first if you must use the lab tool:
 
 ```bash
-python calibrate.py --cam 0 --config hole_positions_cam0.json
+python calibrate.py --cam 0 --config config/DALIA/hole_positions_cam0.json
 ```
+
+Face A = `cam0` … Face F = `cam5` (face ordinal, not USB index).
 
 ---
 

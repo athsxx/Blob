@@ -145,7 +145,7 @@ def main():
             if not assigned:
                 msg = (
                     "camera_port_map.json is missing. Assign cameras in the app "
-                    "(Assign camera faces) or run: python tools/assign_camera_faces.py"
+                    "(Admin → Assign camera faces) before opening the live dashboard."
                 )
                 print(f"[ERROR] {msg}")
                 logger.log_system("ERROR", msg)
@@ -333,7 +333,10 @@ def main():
     global_open_semaphore = ctx.Semaphore(1)
 
     # Communication queues for sending commands to workers
-    comm_queues = {} # Face -> Queue
+    comm_queues = {}  # Face -> Queue
+    snapshot_queue = ctx.Queue()
+    if dashboard and hasattr(dashboard, "bind_worker_ipc"):
+        dashboard.bind_worker_ipc(comm_queues, snapshot_queue)
 
     # Open one camera per USB parent, round-robin (front vs rear), not all of one hub first.
     port_entries = load_port_map(args.config_dir) or []
@@ -353,9 +356,19 @@ def main():
     )
     print(f"[Main] Detailed camera logs: {os.path.join(project_root, 'logs', 'camera_face_X.log')}")
 
-    for cam in cameras_sorted:
-        if not cam.get('enabled', True):
-            continue
+    enabled_to_open = [c for c in cameras_sorted if c.get("enabled", True)]
+    open_total = len(enabled_to_open)
+    if dashboard and hasattr(dashboard, "begin_camera_handshake"):
+        dashboard.begin_camera_handshake(open_total)
+
+    abort_handshake = False
+    for open_i, cam in enumerate(enabled_to_open, start=1):
+        if dashboard and getattr(dashboard, "shutdown_requested", False):
+            abort_handshake = True
+            break
+
+        if dashboard and hasattr(dashboard, "report_camera_opening"):
+            dashboard.report_camera_opening(str(cam.get("face", "?")), open_i, open_total)
 
         config_path = cam['config']
         if not os.path.isabs(config_path):
@@ -402,8 +415,8 @@ def main():
             "min_width": 0,
             "target_fps": capture_fps,
             "display_fps": capture_fps,
-            "roi_calib_width": int(cam.get("width", 640)),
-            "roi_calib_height": int(cam.get("height", 480)),
+            "roi_calib_width": 640,
+            "roi_calib_height": 480,
             "reject_high_res": False,
             "reject_high_fps": False,
             "log_dir": os.path.join(project_root, "logs"),
@@ -434,6 +447,7 @@ def main():
                 open_semaphore,
                 c_queue,
                 ready_queue,
+                snapshot_queue,
             )
         )
         p.start()
@@ -453,6 +467,9 @@ def main():
         deadline = time.time() + ready_timeout_s
         got_ready = False
         while time.time() < deadline:
+            if dashboard and getattr(dashboard, "shutdown_requested", False):
+                abort_handshake = True
+                break
             if qt_app:
                 qt_app.processEvents()
             try:
@@ -471,9 +488,34 @@ def main():
             else:
                 print(f"  [FAIL] Face {cam['face']} did not open — continuing with remaining cameras")
                 logger.log_system("WARN", f"Face {cam['face']} initial open failed")
+            if dashboard and hasattr(dashboard, "report_camera_result"):
+                dashboard.report_camera_result(str(cam["face"]), bool(report.get("ok")))
+            break
+        if abort_handshake:
             break
         if not got_ready:
             print(f"  [WARN] Face {cam['face']} did not report ready within {ready_timeout_s:.0f}s")
+            if dashboard and hasattr(dashboard, "report_camera_result"):
+                dashboard.report_camera_result(str(cam["face"]), False)
+
+    if abort_handshake or (dashboard and getattr(dashboard, "shutdown_requested", False)):
+        print("[Main] Operator stopped while cameras were opening.")
+        logger.log_system("INFO", "Handshake aborted by operator")
+        control_event.set()
+        if dashboard:
+            try:
+                dashboard.close()
+            except Exception:
+                pass
+        for p in processes:
+            p.join(timeout=3)
+            if p.is_alive():
+                p.terminate()
+        logger.stop()
+        return
+
+    if dashboard and hasattr(dashboard, "finish_camera_handshake"):
+        dashboard.finish_camera_handshake()
 
     print()
     print("=" * 60)

@@ -70,31 +70,14 @@ For each camera, set:
 
 ## Calibration
 
-### Step 7: Calibrate ROIs (Each Camera)
+### Step 7: Edit hole ROIs (in the app)
 
-Run for each camera (replace `0` with actual USB index):
-```
-python calibrate.py --cam 0
-python calibrate.py --cam 1
-python calibrate.py --cam 2
-```
+1. Run `python src\main.py`
+2. Wait for **Opening cameras** to finish (do not close the window)
+3. **Admin** → PIN → **Edit hole ROIs**
+4. Pick Face A–F, wait for the snapshot, drag ellipses onto the holes, **Save**
 
-**Controls:**
-| Key | Action |
-|-----|--------|
-| Click | Select nearest ellipse |
-| Arrow keys | Move selected ellipse |
-| `+` / `-` | Resize |
-| `r` / `R` | Rotate |
-| `a` | Add new ellipse |
-| `d` | Delete selected |
-| `n` | Rename selected |
-| `s` | **Save config** |
-| `q` | Quit |
-
-> **IMPORTANT**: Press `s` to save before quitting!
-
-Config saves to `config\rois_webcam.json`
+`calibrate.py` is a lab fallback only after you fully quit the app. Filename `cam0` is Face A, not necessarily USB 0.
 
 ---
 
@@ -131,13 +114,14 @@ python src\main.py --no-display   # Headless mode (logging only)
 
 ### Step 10: Operate the Dashboard
 
-When the application launches, follow the 3-stage flow:
+When the application launches:
 
-1. **Mode Selection**: Click **Sequential Inspection**
-2. **Manifold Selection**: Choose your target manifold (e.g. **DALIA**) from the dropdown menu, then click **▶ START INSPECTION**.
-3. **Live Dashboard**: The camera feeds appear dynamically, and the Logic Engine loads the rules specific to your selected manifold.
-4. Watch the **Inspection Panel** on the left for rule progression.
-5. Use the control buttons across the top:
+1. **Mode**: Click **Sequential**
+2. Wait for **Opening cameras — Face X (n of 6)**. Do not close the window.
+3. **START** (logic only — cameras are already open)
+4. Watch the instruction panel for the laser hole.
+
+Use **Admin** (PIN) for hole ROIs and face assignment. **OVERRIDE** stays on the live bar for testing.
 
 | Button | What it Does |
 |--------|-------------|
@@ -201,8 +185,8 @@ Blob\
 | `python` not found | Re-install Python with "Add to PATH" checked |
 | Camera not detected | Try different USB port, check Device Manager |
 | Black camera feed | Ensure no other app is using the camera |
-| Only some of 5–6 cameras show | Use a **powered** USB hub. In the app, open **Assign camera faces** (pre-inspection page) and skip the missing camera — unassigned faces are disabled. Workers open **MJPG @ 640×480** so OV5693 cams fit on one hub. |
-| Face F (or another face) missing from port map | Use **Assign camera faces** in the app (or `python tools/assign_camera_faces.py`) so every connected camera has a USB port-path entry |
+| Only some of 5–6 cameras show | Use a **powered** USB hub. **Admin → Assign camera faces**, then quit and relaunch. Do not scan while workers are live unless you accept black tiles. |
+| Face F (or another face) missing from port map | **Admin → Assign camera faces**, then quit and relaunch |
 | DirectShow "can't be used to capture by index" spam | Usually a missing/unplugged index being retried, or USB bandwidth. Missing faces are auto-disabled when Windows reports fewer cameras than configured |
 | PyQt6 error | Run with `--cv` flag for OpenCV fallback |
 | Slow display | Normal on first launch; stabilizes after warm-up |

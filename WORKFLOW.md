@@ -6,67 +6,40 @@
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Check cameras are connected
+# 2. Check cameras (engineer)
 python diagnose_cameras.py
 
-# 3. Calibrate ROIs (one camera at a time)
-python calibrate.py --cam 0
-python calibrate.py --cam 1
-
-# 4. Test detection (single camera)
-python detect.py --cam 0
-
-# 5. Run full system
+# 3. Run the app
 python src/main.py
 ```
+
+Daily path (port map already saved): **Mode → live tiles → wait for Opening cameras → START**.
+
+Place or fix hole ROIs from **Admin → Edit hole ROIs** after cameras are open. Do not run `calibrate.py` while `main.py` is live.
 
 ---
 
 ## Step-by-Step
 
-### 1. Diagnose Cameras
-
-Run **once** after plugging in cameras to verify they're detected:
+### 1. Diagnose Cameras (first install)
 
 ```bash
 python diagnose_cameras.py
 ```
 
-You should see all connected cameras with their USB indices. Note which index maps to which face of the manifold.
+### 2. Assign camera faces
 
-### 2. Update Camera Config
+In the app, **Admin → Assign camera faces** (or the first-launch wizard). That writes `config/camera_port_map.json`. Quit and relaunch after a new assignment.
 
-Edit `config/cameras.json` to map USB indices to manifold faces:
+### 3. Edit hole ROIs
 
-| Field | Description |
-|-------|-------------|
-| `usb_index` | The USB camera index from Step 1 |
-| `face` | Which manifold face this camera views (A–F) |
-| `enabled` | Set `false` to disable a camera |
-| `config` | Path to hole positions file |
+After the Opening-cameras overlay finishes: **Admin → PIN → Edit hole ROIs**. Pick a face, wait for the snapshot, drag ellipses, **Save**. Face A writes `config/DALIA/hole_positions_cam0.json` … Face F `cam5.json`.
 
-### 3. Calibrate ROIs
-
-Draw ellipse regions of interest around each hole:
+Lab fallback only after a full quit:
 
 ```bash
-python calibrate.py --cam 0
+python calibrate.py --cam 0 --config config/DALIA/hole_positions_cam0.json
 ```
-
-**Controls:**
-| Key | Action |
-|-----|--------|
-| Click | Select nearest ellipse |
-| Arrow keys | Move selected ellipse |
-| `+` / `-` | Resize |
-| `r` / `R` | Rotate |
-| `a` | Add new ellipse |
-| `d` | Delete selected |
-| `n` | Rename selected |
-| `s` | Save config |
-| `q` | Quit |
-
-Repeat for each camera. Config saves to `config/rois_webcam.json`.
 
 ### 4. Test Detection
 
