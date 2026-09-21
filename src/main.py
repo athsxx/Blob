@@ -138,16 +138,20 @@ def main():
         logger.log_system("WARN", "--skip-indexing: USB port-path resolution bypassed")
     else:
         if sys.platform == "win32" and not check_port_map_exists(args.config_dir):
-            print("[Main] camera_port_map.json missing — face assignment required.")
+            print("[Main] No camera-face mapping yet. Opening Assign camera faces.")
             assigned = False
             if qt_app and dashboard and hasattr(dashboard, "run_face_assign_wizard"):
-                assigned = bool(dashboard.run_face_assign_wizard(required=True))
+                try:
+                    assigned = bool(dashboard.run_face_assign_wizard(required=True))
+                except Exception as exc:
+                    print(f"[Main] Assign camera faces could not start: {exc}")
+                    assigned = False
             if not assigned:
                 msg = (
-                    "camera_port_map.json is missing. Assign cameras in the app "
-                    "(Admin → Assign camera faces) before opening the live dashboard."
+                    "Assign camera faces was not saved. Run python main.py again and "
+                    "complete Assign camera faces before inspection can start."
                 )
-                print(f"[ERROR] {msg}")
+                print(f"[Main] {msg}")
                 logger.log_system("ERROR", msg)
                 logger.stop()
                 return

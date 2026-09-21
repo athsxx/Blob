@@ -2410,10 +2410,25 @@ class DashboardWindow(QMainWindow):
         When required=True, Cancel leaves no mapping (caller should exit).
         """
         if not HAS_PYQT6 or FaceAssignWizardDialog is None:
+            if required and HAS_PYQT6:
+                QMessageBox.warning(
+                    self,
+                    "Camera faces not assigned",
+                    "Assign camera faces could not open. Check that PyQt6 is installed.",
+                )
             return False
         cdir = self.config_dir or os.path.join(self.project_root, "config")
-        dlg = FaceAssignWizardDialog(cdir, DARK_STYLESHEET, self)
-        saved = dlg.exec() == QDialog.DialogCode.Accepted
+        try:
+            dlg = FaceAssignWizardDialog(cdir, DARK_STYLESHEET, self)
+            saved = dlg.exec() == QDialog.DialogCode.Accepted
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Assign camera faces",
+                "Could not open Assign camera faces.\n\n"
+                f"{exc}",
+            )
+            return False
         if saved:
             self.apply_resolved_cameras(self._all_camera_configs())
         elif required:

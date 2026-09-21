@@ -8,6 +8,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
