@@ -67,9 +67,15 @@ def grab_setup_snapshot(usb_index: int, config_dir: str, process_events=None):
         backend = cv2.CAP_ANY
     cap = None
     frame = None
+    prev_log = None
+    try:
+        prev_log = cv2.utils.logging.getLogLevel()
+        cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+    except Exception:
+        prev_log = None
     try:
         cap = cv2.VideoCapture(int(usb_index), backend)
-        if not cap.isOpened():
+        if cap is None or not cap.isOpened():
             return None
         if sys.platform == "win32":
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
@@ -80,7 +86,7 @@ def grab_setup_snapshot(usb_index: int, config_dir: str, process_events=None):
             if process_events is not None:
                 process_events()
             ok, im = cap.read()
-            if ok and im is not None:
+            if ok and im is not None and getattr(im, "size", 0) > 0:
                 frame = im
             elif i == 0:
                 time.sleep(0.4)
@@ -92,6 +98,11 @@ def grab_setup_snapshot(usb_index: int, config_dir: str, process_events=None):
     finally:
         if cap is not None:
             cap.release()
+        if prev_log is not None:
+            try:
+                cv2.utils.logging.setLogLevel(prev_log)
+            except Exception:
+                pass
         time.sleep(0.3)
 
 
@@ -208,44 +219,60 @@ class RoiCanvas(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: ARG002
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#010409"))
-        rect = self._dest_rect()
-        if self._image is not None and rect.isValid():
-            p.drawImage(rect, self._image)
-        if self._image is None:
-            p.setPen(QColor("#8b949e"))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Waiting for snapshot")
+        try:
+            p.fillRect(self.rect(), QColor("#010409"))
+            rect = self._dest_rect()
+            if self._image is not None and rect.isValid():
+                p.drawImage(rect, self._image)
+            if self._image is None:
+                p.setPen(QColor("#8b949e"))
+                p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Waiting for snapshot")
+                return
+            sx = rect.width() / max(self._img_w, 1)
+            sy = rect.height() / max(self._img_h, 1)
+
+            def map_pt(x, y) -> QPoint:
+                return QPoint(rect.x() + int(round(float(x) * sx)), rect.y() + int(round(float(y) * sy)))
+
+            for i, e in enumerate(self.ellipses):
+                try:
+                    self._paint_ellipse(p, e, i == self.selected, rect, sx, sy, map_pt)
+                except Exception:
+                    continue
+
+            if self.place_name:
+                p.setPen(QColor("#d29922"))
+                p.drawText(12, 22, f"Click the image to place {self.place_name}")
+        except Exception:
             return
-        sx = rect.width() / max(self._img_w, 1)
-        sy = rect.height() / max(self._img_h, 1)
+        finally:
+            p.end()
 
-        def map_pt(x, y) -> QPoint:
-            return QPoint(rect.x() + int(round(x * sx)), rect.y() + int(round(y * sy)))
-
-        for i, e in enumerate(self.ellipses):
-            selected = i == self.selected
-            pen = QPen(QColor("#3fb950") if selected else QColor("#58a6ff"))
-            pen.setWidth(2 if selected else 1)
-            p.setPen(pen)
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            center = map_pt(e["cx"], e["cy"])
-            p.save()
+    def _paint_ellipse(self, p, e, selected, rect, sx, sy, map_pt) -> None:
+        pen = QPen(QColor("#3fb950") if selected else QColor("#58a6ff"))
+        pen.setWidth(2 if selected else 1)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        center = map_pt(float(e["cx"]), float(e["cy"]))
+        p.save()
+        try:
             p.translate(center)
-            p.rotate(float(e.get("angle", 0)))
-            p.drawEllipse(QPoint(0, 0), max(2, int(round(e["w"] * sx))), max(2, int(round(e["h"] * sy))))
+            p.rotate(float(e.get("angle", 0) or 0))
+            p.drawEllipse(
+                QPoint(0, 0),
+                max(2, int(round(float(e["w"]) * sx))),
+                max(2, int(round(float(e["h"]) * sy))),
+            )
+        finally:
             p.restore()
-            p.setPen(QColor("#f0f6fc"))
-            p.drawText(center.x() + 6, center.y() - 6, str(e["name"]))
-            if selected:
-                hx, hy = _ellipse_axes_point(e)
-                hp = map_pt(hx, hy)
-                p.setBrush(QColor("#3fb950"))
-                p.setPen(QPen(QColor("#f0f6fc"), 1))
-                p.drawEllipse(hp, HANDLE_R, HANDLE_R)
-
-        if self.place_name:
-            p.setPen(QColor("#d29922"))
-            p.drawText(12, 22, f"Click the image to place {self.place_name}")
+        p.setPen(QColor("#f0f6fc"))
+        p.drawText(center.x() + 6, center.y() - 6, str(e.get("name") or ""))
+        if selected:
+            hx, hy = _ellipse_axes_point(e)
+            hp = map_pt(hx, hy)
+            p.setBrush(QColor("#3fb950"))
+            p.setPen(QPen(QColor("#f0f6fc"), 1))
+            p.drawEllipse(hp, HANDLE_R, HANDLE_R)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self.busy or event.button() != Qt.MouseButton.LeftButton:

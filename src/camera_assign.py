@@ -51,64 +51,82 @@ def capture_backend() -> int:
 def scan_cameras(
     max_index: int = MAX_INDEX,
     progress: Optional[Callable[[str], None]] = None,
+    width: int = 320,
+    height: int = 240,
+    fps: float = 5,
 ) -> List[Dict[str, Any]]:
     """
     Sequentially open USB indices 0..max_index, grab one warmed snapshot, release.
 
     Returns list of dicts: {index, frame, width, height}.
     Only one device is held open at a time (required on shared USB hubs).
+    Size defaults match the live capture lock (MJPG 320×240 @ 5 fps).
+    Empty indices are skipped. OpenCV's DirectShow warning for those slots is silenced.
     """
     backend = capture_backend()
     found: List[Dict[str, Any]] = []
+    prev_log = None
+    try:
+        prev_log = cv2.utils.logging.getLogLevel()
+        cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+    except Exception:
+        prev_log = None
 
-    for i in range(max_index + 1):
-        if progress:
-            progress(f"Opening USB index {i}…")
-        cap = None
-        try:
-            cap = cv2.VideoCapture(i, backend)
-            if not cap.isOpened():
-                if progress:
-                    progress(f"USB {i}: not available")
-                continue
-
-            if sys.platform == "win32":
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                cap.set(cv2.CAP_PROP_FPS, 15)
-
-            ok = False
-            frame = None
-            for warmup_i in range(15):
-                ok, frame = cap.read()
-                if not ok:
-                    time.sleep(0.05)
+    try:
+        for i in range(max_index + 1):
+            if progress:
+                progress(f"Opening USB index {i}…")
+            cap = None
+            try:
+                cap = cv2.VideoCapture(i, backend)
+                if cap is None or not cap.isOpened():
+                    if progress:
+                        progress(f"USB {i}: not available")
                     continue
-                if warmup_i == 0:
-                    time.sleep(0.4)
-            if not ok or frame is None:
-                if progress:
-                    progress(f"USB {i}: opened but cannot read")
-                continue
 
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or int(frame.shape[1])
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or int(frame.shape[0])
-            found.append({
-                "index": i,
-                "frame": frame.copy(),
-                "width": w,
-                "height": h,
-            })
-            if progress:
-                progress(f"USB {i}: found ({w}x{h})")
-        except Exception as exc:
-            if progress:
-                progress(f"USB {i}: error ({exc})")
-        finally:
-            if cap is not None:
-                cap.release()
-            time.sleep(0.3)
+                if sys.platform == "win32":
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(width))
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
+                    cap.set(cv2.CAP_PROP_FPS, float(fps))
+
+                ok = False
+                frame = None
+                for warmup_i in range(15):
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        time.sleep(0.05)
+                        continue
+                    if warmup_i == 0:
+                        time.sleep(0.4)
+                if not ok or frame is None or getattr(frame, "size", 0) == 0:
+                    if progress:
+                        progress(f"USB {i}: opened but cannot read")
+                    continue
+
+                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or int(frame.shape[1])
+                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or int(frame.shape[0])
+                found.append({
+                    "index": i,
+                    "frame": frame.copy(),
+                    "width": w,
+                    "height": h,
+                })
+                if progress:
+                    progress(f"USB {i}: found ({w}x{h})")
+            except Exception as exc:
+                if progress:
+                    progress(f"USB {i}: error ({exc})")
+            finally:
+                if cap is not None:
+                    cap.release()
+                time.sleep(0.3)
+    finally:
+        if prev_log is not None:
+            try:
+                cv2.utils.logging.setLogLevel(prev_log)
+            except Exception:
+                pass
 
     return found
 

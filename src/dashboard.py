@@ -57,7 +57,7 @@ try:
         QButtonGroup, QDialogButtonBox, QStackedWidget, QSpinBox,
         QCheckBox, QMessageBox, QFormLayout,
     )
-    from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+    from PyQt6.QtCore import Qt, QTimer, pyqtSignal, qInstallMessageHandler
     from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QPalette, QCloseEvent
     HAS_PYQT6 = True
 except ImportError:
@@ -96,8 +96,8 @@ DARK_STYLESHEET = """
 QMainWindow, QWidget {
     background-color: #0d1117;
     color: #e6edf3;
-    font-family: 'SF Pro Text', 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
-    font-size: 13px;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 10pt;
 }
 QLabel { color: #e6edf3; }
 
@@ -2582,6 +2582,39 @@ class OpenCVDashboard:
 # Factory
 # ──────────────────────────────────────────────
 
+if HAS_PYQT6:
+    def _quiet_qt_message(_mode, _context, message) -> None:
+        text = str(message)
+        if "Point size <= 0" in text:
+            return
+        sys.stderr.write(text + "\n")
+
+    class InspectionApplication(QApplication):
+        """Keeps one failed click or paint from closing the inspection window."""
+
+        def __init__(self, argv):
+            super().__init__(argv)
+            self._handling_error = False
+
+        def notify(self, receiver, event):
+            try:
+                return super().notify(receiver, event)
+            except Exception as exc:
+                if self._handling_error:
+                    return False
+                self._handling_error = True
+                try:
+                    QMessageBox.critical(
+                        None,
+                        "Something went wrong",
+                        "That action did not finish. Cameras were left as they were.\n\n"
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                finally:
+                    self._handling_error = False
+                return False
+
+
 def create_dashboard(total_rules: int = 0,
                      force_cv: bool = False,
                      cameras=None,
@@ -2594,12 +2627,12 @@ def create_dashboard(total_rules: int = 0,
     Otherwise returns an OpenCVDashboard.
     """
     if HAS_PYQT6 and not force_cv:
-        app = QApplication.instance() or QApplication(sys.argv)
+        qInstallMessageHandler(_quiet_qt_message)
+        app = QApplication.instance() or InspectionApplication(sys.argv)
+        font = QFont("Segoe UI", 10)
+        font.setStyleHint(QFont.StyleHint.SansSerif)
+        app.setFont(font)
         app.setStyleSheet(DARK_STYLESHEET)
-        base_font = QFont()
-        base_font.setPointSize(10)
-        base_font.setStyleHint(QFont.StyleHint.SansSerif)
-        app.setFont(base_font)
         win = DashboardWindow(
             total_rules=total_rules,
             cameras=cameras,

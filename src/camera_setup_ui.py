@@ -34,17 +34,23 @@ class _FaceAssignScanThread(QThread):
     scan_done = pyqtSignal(list)
     scan_failed = pyqtSignal(str)
 
-    def __init__(self, max_index: int = 9, parent=None):
+    def __init__(self, config_dir: str = "", max_index: int = 9, parent=None):
         super().__init__(parent)
         self._max_index = max_index
+        self._config_dir = config_dir
 
     def run(self) -> None:
         try:
             from camera_assign import attach_port_paths, scan_cameras
+            from capture_profile import load_capture_profile
 
+            profile = load_capture_profile(self._config_dir) if self._config_dir else {}
             found = scan_cameras(
                 max_index=self._max_index,
                 progress=lambda msg: self.progress.emit(msg),
+                width=int(profile.get("width") or 320),
+                height=int(profile.get("height") or 240),
+                fps=float(profile.get("fps") or 5),
             )
             attach_port_paths(found)
             self.scan_done.emit(found)
@@ -54,8 +60,12 @@ class _FaceAssignScanThread(QThread):
 
 def _bgr_to_pixmap(frame, max_width: int = 280) -> QPixmap:
     """Convert an OpenCV BGR ndarray to a scaled QPixmap (copied, buffer-safe)."""
+    if frame is None or getattr(frame, "ndim", 0) != 3 or frame.shape[2] < 3:
+        return QPixmap()
     h, w = frame.shape[:2]
-    rgb = frame[..., ::-1].copy()
+    if h <= 0 or w <= 0:
+        return QPixmap()
+    rgb = frame[..., :3][..., ::-1].copy()
     qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
     pix = QPixmap.fromImage(qimg)
     if w > max_width:
@@ -157,7 +167,7 @@ class FaceAssignWizardDialog(QDialog):
         self._scan_btn.setEnabled(False)
         self._status.setText("Scanning USB cameras… keep other camera apps closed.")
         self._clear_grid()
-        self._scan_thread = _FaceAssignScanThread(parent=self)
+        self._scan_thread = _FaceAssignScanThread(self.config_dir, parent=self)
         self._scan_thread.progress.connect(self._status.setText)
         self._scan_thread.scan_done.connect(self._on_scan_done)
         self._scan_thread.scan_failed.connect(self._on_scan_failed)
@@ -181,32 +191,43 @@ class FaceAssignWizardDialog(QDialog):
         from camera_assign import VALID_FACES
 
         for i, cam in enumerate(cameras):
-            tile = QWidget()
-            tl = QVBoxLayout(tile)
-            tl.setContentsMargins(8, 8, 8, 8)
-            tl.setSpacing(6)
-            img = QLabel()
-            img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            img.setStyleSheet("background-color: #161b22; border-radius: 6px;")
-            img.setPixmap(_bgr_to_pixmap(cam["frame"]))
-            tl.addWidget(img)
-            path = str(cam.get("port_path") or "")
-            short = path if len(path) < 52 else path[:24] + "…" + path[-24:]
-            meta = QLabel(f"USB {cam['index']}  ·  {cam['width']}×{cam['height']}\n{short}")
-            meta.setWordWrap(True)
-            meta.setStyleSheet("color: #8b949e; font-size: 11px;")
-            tl.addWidget(meta)
-            combo = QComboBox()
-            combo.addItem("Skip (not used)", userData="")
-            for face in VALID_FACES:
-                combo.addItem(f"Face {face}", userData=face)
-            # Pre-select Face letter in scan order when possible (A, B, C…).
-            if i < len(VALID_FACES):
-                combo.setCurrentIndex(i + 1)
-            self._face_combo[int(cam["index"])] = combo
-            tl.addWidget(combo)
-            row, col = divmod(i, 3)
-            self._grid.addWidget(tile, row, col)
+            try:
+                self._add_camera_tile(i, cam, VALID_FACES)
+            except Exception:
+                continue
+
+    def _add_camera_tile(self, i: int, cam: Dict[str, Any], valid_faces: List[str]) -> None:
+        tile = QWidget()
+        tl = QVBoxLayout(tile)
+        tl.setContentsMargins(8, 8, 8, 8)
+        tl.setSpacing(6)
+        img = QLabel()
+        img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        img.setStyleSheet("background-color: #161b22; border-radius: 6px;")
+        pix = _bgr_to_pixmap(cam.get("frame"))
+        if pix.isNull():
+            img.setText(f"USB {cam.get('index', '?')}\nNo picture")
+        else:
+            img.setPixmap(pix)
+        tl.addWidget(img)
+        path = str(cam.get("port_path") or "")
+        short = path if len(path) < 52 else path[:24] + "…" + path[-24:]
+        meta = QLabel(
+            f"USB {cam.get('index', '?')}  ·  {cam.get('width', '?')}×{cam.get('height', '?')}\n{short}"
+        )
+        meta.setWordWrap(True)
+        meta.setStyleSheet("color: #8b949e; font-size: 11px;")
+        tl.addWidget(meta)
+        combo = QComboBox()
+        combo.addItem("Skip (not used)", userData="")
+        for face in valid_faces:
+            combo.addItem(f"Face {face}", userData=face)
+        if i < len(valid_faces):
+            combo.setCurrentIndex(i + 1)
+        self._face_combo[int(cam["index"])] = combo
+        tl.addWidget(combo)
+        row, col = divmod(i, 3)
+        self._grid.addWidget(tile, row, col)
 
     def _save(self) -> None:
         from camera_assign import persist_assignments

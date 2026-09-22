@@ -44,7 +44,7 @@ Existing data, do not delete unless asked: `config/DALIA/connectivity_rules.json
 ## History that must not be redone
 
 - Six cameras display on Windows after MJPG 320×240 @ 5 fps, no YUY2, 90s handshake, hub interleave. USB5 ignored FPS until software pace. Sleep-between-reads froze tiles. Face A reconnect can come back YUY2; do not “fix” that by raising resolution.
-- In-app ROI must not steal USB from live workers. Setup-page ROI opens one index, grabs a warmed frame, releases. That replaced the idea of editing on the live tiles.
+- Assign-faces scan and hole-ROI freeze open one camera at the capture-lock size (MJPG 320×240 @ 5 fps), then release. Empty USB indexes are skipped. A bad ellipse or a failed click must not close the app.
 - Admin was tried on the live bar, then on the start screen. Both are discarded. The owner could not calibrate while cameras were held, and did not want a PIN.
 - First-launch assign wizard **before** mode was removed. Assign happens after the manifold.
 - A sibling agent added Excel/type-in hole connections. Keep it. Do not drop `connectivity_rules_io.py` or `rule_editor_ui.py`.
