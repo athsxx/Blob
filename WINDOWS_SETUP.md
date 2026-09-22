@@ -73,9 +73,9 @@ For each camera, set:
 ### Step 7: Edit hole ROIs (in the app)
 
 1. Run `python src\main.py`
-2. Wait for **Opening cameras** to finish (do not close the window)
-3. **Admin** → PIN → **Edit hole ROIs**
-4. Pick Face A–F, wait for the snapshot, drag ellipses onto the holes, **Save**
+2. Choose Sequential, then the manifold
+3. On **Camera setup**, use **Place hole ROIs** (cameras are still closed)
+4. Pick Face A–F, wait for the freeze, drag ellipses onto the holes, **Save**
 
 `calibrate.py` is a lab fallback only after you fully quit the app. Filename `cam0` is Face A, not necessarily USB 0.
 
@@ -121,7 +121,7 @@ When the application launches:
 3. **START** (logic only — cameras are already open)
 4. Watch the instruction panel for the laser hole.
 
-Use **Admin** (PIN) for hole ROIs and face assignment. **OVERRIDE** stays on the live bar for testing.
+Use **Redo camera setup** on the start screen for hole ROIs, face assignment, and hole connections. **OVERRIDE** stays on the live bar for testing.
 
 | Button | What it Does |
 |--------|-------------|
@@ -185,8 +185,8 @@ Blob\
 | `python` not found | Re-install Python with "Add to PATH" checked |
 | Camera not detected | Try different USB port, check Device Manager |
 | Black camera feed | Ensure no other app is using the camera |
-| Only some of 5–6 cameras show | Use a **powered** USB hub. **Admin → Assign camera faces**, then quit and relaunch. Do not scan while workers are live unless you accept black tiles. |
-| Face F (or another face) missing from port map | **Admin → Assign camera faces**, then quit and relaunch |
+| Only some of 5–6 cameras show | Use a **powered** USB hub. On the start screen choose **Redo camera setup**, then **Assign camera faces**. Do not scan while workers are live. |
+| Face F (or another face) missing from port map | **Redo camera setup** → **Assign camera faces**, then Continue |
 | DirectShow "can't be used to capture by index" spam | Usually a missing/unplugged index being retried, or USB bandwidth. Missing faces are auto-disabled when Windows reports fewer cameras than configured |
 | PyQt6 error | Run with `--cv` flag for OpenCV fallback |
 | Slow display | Normal on first launch; stabilizes after warm-up |

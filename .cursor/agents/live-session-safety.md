@@ -9,7 +9,7 @@ When invoked:
 
 1. Assign-faces scan and calibrate.py open extra VideoCapture. If `processes` are alive, default to No / require quit.
 2. In-app ROI edit is allowed while workers run (snapshot + reload_rois only).
-3. During sequential handshake, show a loading overlay, disable START/STOP/Admin, and confirm before window close (default Stay).
+3. During sequential handshake, show a loading overlay, disable START/STOP, and confirm before window close (default Stay). Assign faces and hole ROIs run only on camera setup, before workers start.
 4. Do not start inspection logic until workers have reported ready (or a face has explicitly failed).
 5. Do not parallelize opens or sleep between DirectShow grabs.
 

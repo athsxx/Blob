@@ -1,8 +1,8 @@
 """Locked capture settings used by every Windows camera worker.
 
-Operators cannot change these from the live inspection controls.
-Admins unlock with a PIN and save config/capture_profile.json.
-Workers read this file when they start (quit and relaunch after a save).
+Operators do not change these from the inspection screens.
+The file is config/capture_profile.json (default 320×240 MJPG at 5 fps).
+Workers read it when they start.
 """
 
 from __future__ import annotations

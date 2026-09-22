@@ -42,7 +42,7 @@ All commands below assume the repo root is your current directory (`Blob/`).
 
 ### Helper / diagnostic scripts (engineer only)
 
-These are **not** the daily operator path. Prefer **Admin → Assign camera faces** and **Admin → Edit hole ROIs** inside `python src/main.py`.
+These are **not** the daily operator path. Prefer **Camera setup** inside `python src/main.py` (after the manifold): Assign camera faces, Place hole ROIs, Hole connections.
 
 | Command | Purpose |
 |--------|---------|
@@ -54,22 +54,22 @@ These are **not** the daily operator path. Prefer **Admin → Assign camera face
 ## Operator flow (exact UI sequence)
 
 1. **Launch**  
-   Run `python src/main.py`. If `camera_port_map.json` is missing (first Windows install), complete **Assign camera faces**.
+   Run `python src/main.py`. Cameras stay closed on the start screen.
 
 2. **Mode**  
-   Choose **Sequential** (full guided sequence) or **Manual (single rule)** (testing).
+   Choose **Sequential** (full guided sequence) or **Manual (single rule)** (testing). **Redo camera setup** is on this screen when faces, hole ROIs, or hole connections need to be done again.
 
 3. **Manifold**  
    Sequential with more than one model: pick **DALIA** (or last used). A single model skips this page. Manual: pick manifold, face, and rule on the next page.
 
-4. **Live dashboard**  
+4. **Camera setup (first time, or after Redo)**  
+   **Assign camera faces** (required once), **Place hole ROIs**, **Hole connections** (spreadsheet when you have it). **Continue** opens the cameras and skips this page next launch.
+
+5. **Live dashboard**  
    Wait for **Opening cameras — Face X (n of 6)**. Do not close the window. **START** stays off until workers report ready.
 
-5. **START**  
+6. **START**  
    Starts **logic only** (cameras are already open). Follow guided steps. **OVERRIDE** stays on the bar for testing.
-
-6. **Admin (PIN)**  
-   **Edit hole ROIs** (freeze live frame, drag ellipses, Save — cameras stay up). **Assign camera faces** (quit and relaunch after saving). Capture lock still needs a full relaunch.
 
 7. **Logs**  
    Under `logs/` (CSV / JSONL per day, plus `camera_face_X.log`).
@@ -78,7 +78,7 @@ These are **not** the daily operator path. Prefer **Admin → Assign camera face
 
 ## ROI calibration
 
-Shop-floor path: **Admin → PIN → Edit hole ROIs** after cameras are open. Snapshot comes from the live worker (no second `VideoCapture`). Hole names come from `connectivity_rules.json`. Face A writes `hole_positions_cam0.json` … Face F `cam5.json`. Save writes `calib_width` / `calib_height` and reloads masks without restarting.
+Shop-floor path: **Camera setup → Place hole ROIs** before cameras open. One USB camera is frozen at the live capture size, then released. Hole names come from `connectivity_rules.json`. Face A writes `hole_positions_cam0.json` … Face F `cam5.json`. Save writes `calib_width` / `calib_height`.
 
 Lab fallback (app fully quit): `python calibrate.py --cam N --config config/DALIA/hole_positions_cam0.json` for Face A. `N` is the USB index; the filename `cam0` is the **face ordinal**.
 
@@ -98,7 +98,7 @@ python calibrate.py --cam 0 --config config/DALIA/hole_positions_cam0.json
 
 - Maps **`usb_index`** → **`face`** (A–F) and **`config`** (filename like `hole_positions_cam0.json`).  
 - **`enabled: false`** skips that camera (worker not started).  
-- **Admin → Assign camera faces** writes the port map; **quit and relaunch** after saving so workers reopen the correct USB indices.
+- **Camera setup → Assign camera faces** writes the port map. **Continue** opens workers on those USB indices.
 
 ### Standard layout (recommended)
 

@@ -184,26 +184,9 @@ Defines expected internal connectivity.
 
 ---
 
-### 7.4 `inspection_sequences.json`
+### 7.4 Inspection sequence (derived, not a file)
 
-Defines operator inspection order.
-
-```json
-{
-  "inspection_sequences": [
-    {
-      "sequence_id": "FACE_A",
-      "steps": [
-        {
-          "step_id": 1,
-          "input_hole": { "face": "A", "hole_id": "A1" },
-          "rule_id": "FACE_A_A1"
-        }
-      ]
-    }
-  ]
-}
-```
+Operator order is **not** a separate `inspection_sequences.json`. `LogicEngine.build_guided_sequence` derives steps from `connectivity_rules.json` (input face A→F, then hole id). Do not add a second sequence file.
 
 ---
 

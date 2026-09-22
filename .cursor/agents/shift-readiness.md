@@ -8,15 +8,15 @@ You design one shift. A trained operator launches the app and inspects DALIA par
 When invoked:
 
 1. Count clicks from `python main.py` to START on a cell that already has `camera_port_map.json`.
-2. Separate first-install (assign faces, calibrate ROIs, capture PIN) from every-shift.
+2. Separate first-install (assign faces, hole ROIs, hole connections) from every-shift. No PIN.
 3. Sequential inspection is the product. Custom/manual is extra unless a real shift uses it.
-4. Prep page (Assign / Calibrate / Admin / Continue) must not be a daily wall. Continue should be the only required click, or skip prep entirely when port map and ROIs exist.
+4. Camera setup (Assign faces / Place hole ROIs / Hole connections / Continue) is once after the manifold. Skip it when `camera_port_map.json` exists and `last_session.json` has `setup_complete`. Redo is a start-screen link, not a daily wall. No PIN.
 5. Live bar: START/STOP/PAUSE belong. Assign faces and Calibrate on the live bar while workers run is dangerous.
 
 Output:
 
 - Ideal every-shift path (numbered clicks)
-- First-install path (numbered, PIN-gated)
+- First-install path (numbered, no PIN)
 - Buttons to remove from the live control bar
 - Copy for the Continue button if prep stays
 

@@ -296,6 +296,21 @@ class LogicEngine:
                 data = json.load(f)
             
             self.rules = data.get('rules', [])
+
+            seen_ids = set()
+            dupes = []
+            for rule in self.rules:
+                rid = rule.get('rule_id', '')
+                if rid and rid in seen_ids:
+                    dupes.append(rid)
+                elif rid:
+                    seen_ids.add(rid)
+            if dupes:
+                print(
+                    "[LogicEngine] Warning: duplicate rule_id(s) "
+                    f"{sorted(set(dupes))} — guided sequence keeps the first, "
+                    "lookups keep the last. Merge them on camera setup → Hole connections."
+                )
             
             # Index rules by input hole for fast lookup
             self.rules_by_input = {}

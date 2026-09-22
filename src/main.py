@@ -49,6 +49,36 @@ from logic_engine import LogicEngine
 from logger import get_logger
 
 
+def _stop_camera_workers(processes, control_event, timeout: float = 3.0) -> None:
+    """Release USB: signal workers, join, terminate leftovers."""
+    try:
+        control_event.set()
+    except Exception:
+        pass
+    for p in processes:
+        try:
+            p.join(timeout=timeout)
+        except Exception:
+            pass
+        if getattr(p, "is_alive", lambda: False)():
+            try:
+                p.terminate()
+                p.join(timeout=2)
+            except Exception:
+                pass
+
+
+def _relaunch_start_screen() -> None:
+    """Fresh process on the start screen after cameras are fully released."""
+    argv = [sys.executable, *sys.argv]
+    print("[Main] Cameras closed. Returning to the start screen...")
+    if sys.platform == "win32":
+        import subprocess
+        subprocess.Popen(argv, cwd=os.getcwd(), close_fds=False)
+        os._exit(0)
+    os.execv(sys.executable, argv)
+
+
 def main():
     # Parse arguments
     parser = argparse.ArgumentParser(description='Multi-Camera Manifold Inspection')
@@ -137,49 +167,29 @@ def main():
         print("       WARNING: camera-face mapping may be incorrect after a reboot or USB change.")
         logger.log_system("WARN", "--skip-indexing: USB port-path resolution bypassed")
     else:
-        if sys.platform == "win32" and not check_port_map_exists(args.config_dir):
-            print("[Main] No camera-face mapping yet. Opening Assign camera faces.")
-            assigned = False
-            if qt_app and dashboard and hasattr(dashboard, "run_face_assign_wizard"):
-                try:
-                    assigned = bool(dashboard.run_face_assign_wizard(required=True))
-                except Exception as exc:
-                    print(f"[Main] Assign camera faces could not start: {exc}")
-                    assigned = False
-            if not assigned:
-                msg = (
-                    "Assign camera faces was not saved. Run python main.py again and "
-                    "complete Assign camera faces before inspection can start."
-                )
-                print(f"[Main] {msg}")
-                logger.log_system("ERROR", msg)
+        if not check_port_map_exists(args.config_dir):
+            print("[Main] No camera-face mapping yet. Assign faces after the manifold is selected.")
+        else:
+            try:
+                cameras = resolve_camera_indices(cameras, args.config_dir)
+            except RuntimeError as e:
+                print(str(e))
+                logger.log_system("ERROR", str(e))
                 logger.stop()
                 return
-            cameras = load_cameras(cameras_file)
-            cam_errors = validate_enabled_cameras(cameras)
-            if cam_errors:
-                for e in cam_errors:
-                    print(f"[ERROR] {e}")
-                logger.stop()
-                return
-        try:
-            cameras = resolve_camera_indices(cameras, args.config_dir)
-        except RuntimeError as e:
-            print(str(e))
-            logger.log_system("ERROR", str(e))
-            logger.stop()
-            return
-        except Exception as e:
-            msg = f"Camera index resolver error: {e}. Falling back to cameras.json indices."
-            print(f"[WARN] {msg}")
-            logger.log_system("WARN", msg)
+            except Exception as e:
+                msg = f"Camera index resolver error: {e}. Falling back to cameras.json indices."
+                print(f"[WARN] {msg}")
+                logger.log_system("WARN", msg)
 
     inspection_mode = "sequential"  # default
     selected_manifold = "DALIA"     # default
     
-    # Wait for mode and manifold selection from integrated Start Pages
+    # Wait for mode and manifold selection from the start screen (cameras still closed)
     if qt_app:
-        print("[Main] Waiting for operator to select Mode and Manifold...")
+        print("[Main] Start screen — cameras closed until camera setup is finished.")
+        if hasattr(dashboard, "enter_start_screen"):
+            dashboard.enter_start_screen()
         from PyQt6.QtCore import QEventLoop
         loop = QEventLoop()
         dashboard.set_setup_event_loop(loop)
@@ -356,7 +366,7 @@ def main():
     print(
         f"[Main] Capture profile: {profile['width']}x{profile['height']} "
         f"{profile['fourcc']} @ {profile['fps']:.0f} fps "
-        f"(edit via Admin, PIN in config/capture_profile.json)"
+        f"(locked in config/capture_profile.json)"
     )
     print(f"[Main] Detailed camera logs: {os.path.join(project_root, 'logs', 'camera_face_X.log')}")
 
@@ -641,6 +651,44 @@ def main():
 
             dashboard.sig_override.connect(handle_override)
 
+            def _on_reload_rules():
+                if engine.is_running:
+                    print("[Main] Ignore hole-connection reload while inspection is running")
+                    return
+                if not engine.load_rules(rule_file):
+                    print(f"[Main] Failed to reload rules from {rule_file}")
+                    return
+                rebuilt = []
+                if inspection_mode == "sequential":
+                    rebuilt = engine.build_guided_sequence(available_faces)
+                    engine.guided_mode = True
+                    if rebuilt:
+                        engine.set_guided_step(0)
+                elif inspection_mode == "custom":
+                    rid = getattr(dashboard, "custom_rule_id", None)
+                    if rid:
+                        step = engine.build_single_guided_step(rid, available_faces, step_num=1)
+                        if step:
+                            rebuilt = [step]
+                            engine.guided_mode = True
+                            engine._guided_sequence = rebuilt
+                            engine.set_guided_step(0)
+                        else:
+                            engine.guided_mode = False
+                if dashboard and hasattr(dashboard, "load_guided_sequence"):
+                    dashboard.load_guided_sequence(rebuilt)
+                dashboard.set_rule_ids(engine.get_all_rule_ids())
+                print(
+                    f"[Main] Reloaded {len(engine.rules)} hole connections "
+                    f"({len(rebuilt)} guided steps). Cameras were not restarted."
+                )
+                logger.log_system(
+                    "INFO",
+                    f"Reloaded {len(engine.rules)} hole connections; cameras stay open",
+                )
+
+            dashboard.sig_reload_rules.connect(_on_reload_rules)
+
             # Populate rule IDs for override dialog
             dashboard.set_rule_ids(engine.get_all_rule_ids())
 
@@ -782,6 +830,25 @@ def main():
             timer = QTimer()
             timer.timeout.connect(poll_queues)
             timer.start(16)  # ~60fps UI refresh
+
+            def _on_return_to_setup():
+                print("[Main] Closing cameras and returning to the start screen...")
+                logger.log_system("INFO", "Operator returned to start screen; stopping cameras")
+                try:
+                    engine.stop()
+                except Exception:
+                    pass
+                step_timer.stop()
+                timer.stop()
+                if qt_app:
+                    qt_app.processEvents()
+                _stop_camera_workers(processes, control_event)
+                if dashboard and hasattr(dashboard, "unbind_worker_ipc"):
+                    dashboard.unbind_worker_ipc()
+                logger.stop()
+                _relaunch_start_screen()
+
+            dashboard.sig_return_to_setup.connect(_on_return_to_setup)
 
             dashboard.showMaximized()
             dashboard.raise_()

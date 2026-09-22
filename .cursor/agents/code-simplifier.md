@@ -10,7 +10,7 @@ When invoked:
 1. Work on recently modified files unless the user names others.
 2. Delete dead screens, unused imports, and duplicate camera-mapping UI. Do not delete camera_worker capture, indexer, logic engine, or logs.
 3. Keep Manual mode and OVERRIDE visible while they are still used for testing.
-4. Prefer one operator path: Mode → live → START. Setup belongs behind Admin PIN.
+4. Prefer one operator path: Mode → manifold → live → START. Camera setup (assign, ROIs, hole connections) is once after the manifold, with Redo on the start screen. No PIN.
 5. Do not open a second VideoCapture, raise FPS, or parallelize camera opens.
 
 Output:

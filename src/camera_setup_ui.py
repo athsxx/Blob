@@ -12,15 +12,12 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QFormLayout,
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -313,7 +310,7 @@ class CalibrateRoiDialog(QDialog):
         roi_hint = QLabel(
             f"Manifold: {self._manifold} — ROI files: config/{self._data_subdir}/"
             f"hole_positions_camN.json (N is face ordinal: Face A = cam0 … Face F = cam5, not USB index). "
-            "Prefer Admin → Edit hole ROIs while cameras are live."
+            "Prefer Place hole ROIs on the camera setup page (cameras closed)."
         )
         roi_hint.setWordWrap(True)
         layout.addWidget(roi_hint)
@@ -355,136 +352,6 @@ class CalibrateRoiDialog(QDialog):
             "Calibrate",
             "Lab calibration tool started in a separate window.\n"
             "This opens a second camera capture — only use it after fully quitting the inspection app.",
-        )
-        self.accept()
-
-
-class AdminCaptureDialog(QDialog):
-    """PIN-locked admin hub: capture lock, face assign, in-app ROI editor, lab calibrator."""
-
-    def __init__(self, config_dir: str, stylesheet: str = "", parent=None):
-        super().__init__(parent)
-        self._config_dir = config_dir
-        self.requested_action: Optional[str] = None
-        self.setWindowTitle("Admin")
-        self.setMinimumWidth(440)
-        if stylesheet:
-            self.setStyleSheet(stylesheet)
-
-        from capture_profile import load_capture_profile
-
-        self._profile = load_capture_profile(config_dir)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(12)
-
-        title = QLabel("Admin")
-        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #f0f6fc;")
-        layout.addWidget(title)
-        hint = QLabel(
-            "Unlock with the PIN to edit hole ROIs, assign camera faces, or change the capture lock. "
-            "Capture-lock changes need a full quit and relaunch."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #8b949e; font-size: 12px;")
-        layout.addWidget(hint)
-
-        pin_row = QHBoxLayout()
-        self._pin = QLineEdit()
-        self._pin.setEchoMode(QLineEdit.EchoMode.Password)
-        self._pin.setPlaceholderText("Admin PIN")
-        unlock = QPushButton("Unlock")
-        unlock.setObjectName("pageSecondary")
-        unlock.clicked.connect(self._unlock)
-        pin_row.addWidget(self._pin, stretch=1)
-        pin_row.addWidget(unlock)
-        layout.addLayout(pin_row)
-
-        self._btn_rois = QPushButton("Edit hole ROIs")
-        self._btn_rois.setObjectName("pagePrimary")
-        self._btn_rois.clicked.connect(lambda: self._request("edit_rois"))
-        self._btn_assign = QPushButton("Assign camera faces")
-        self._btn_assign.setObjectName("pageSecondary")
-        self._btn_assign.clicked.connect(lambda: self._request("assign_faces"))
-        self._btn_lab = QPushButton("Lab calibrator (quit app first)")
-        self._btn_lab.setObjectName("pageSecondary")
-        self._btn_lab.clicked.connect(lambda: self._request("lab_calibrate"))
-        layout.addWidget(self._btn_rois)
-        layout.addWidget(self._btn_assign)
-        layout.addWidget(self._btn_lab)
-
-        form = QFormLayout()
-        self._size = QComboBox()
-        self._size.addItem("320 × 240 (recommended)", userData=(320, 240))
-        self._size.addItem("640 × 480", userData=(640, 480))
-        form.addRow("Resolution", self._size)
-
-        self._fps = QSpinBox()
-        self._fps.setRange(1, 10)
-        self._fps.setSuffix(" fps")
-        form.addRow("Frame rate", self._fps)
-
-        self._fourcc = QLabel("MJPG  ·  DirectShow")
-        self._fourcc.setStyleSheet("color: #8b949e;")
-        form.addRow("Format", self._fourcc)
-        layout.addLayout(form)
-
-        self._save = QPushButton("Save capture lock")
-        self._save.setObjectName("pageSecondary")
-        self._save.clicked.connect(self._on_save)
-        layout.addWidget(self._save)
-
-        self._set_form_enabled(False)
-        self._load_values()
-        self._pin.returnPressed.connect(self._unlock)
-
-    def _request(self, action: str) -> None:
-        self.requested_action = action
-        self.accept()
-
-    def _set_form_enabled(self, on: bool) -> None:
-        self._size.setEnabled(on)
-        self._fps.setEnabled(on)
-        self._save.setEnabled(on)
-        self._btn_rois.setEnabled(on)
-        self._btn_assign.setEnabled(on)
-        self._btn_lab.setEnabled(on)
-
-    def _load_values(self) -> None:
-        w = int(self._profile.get("width", 320))
-        self._size.setCurrentIndex(1 if w >= 640 else 0)
-        self._fps.setValue(int(self._profile.get("fps", 5)))
-
-    def _unlock(self) -> None:
-        entered = self._pin.text().strip()
-        expected = str(self._profile.get("admin_pin") or "2468")
-        if entered != expected:
-            QMessageBox.warning(self, "Admin", "Wrong PIN.")
-            return
-        self._set_form_enabled(True)
-        self._pin.clear()
-        QMessageBox.information(self, "Admin", "Unlocked.")
-
-    def _on_save(self) -> None:
-        from capture_profile import save_capture_profile
-
-        pair = self._size.currentData()
-        width, height = pair if pair else (320, 240)
-        save_capture_profile(
-            self._config_dir,
-            {
-                "width": int(width),
-                "height": int(height),
-                "fps": int(self._fps.value()),
-                "fourcc": "MJPG",
-                "backend": "dshow",
-            },
-        )
-        QMessageBox.information(
-            self,
-            "Admin",
-            "Capture lock saved.\nQuit the app and run python main.py again for all six cameras to use it.",
         )
         self.accept()
 

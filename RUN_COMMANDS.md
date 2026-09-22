@@ -41,9 +41,9 @@ python diagnose_cameras.py
 
 ---
 
-## 4. Hole ROIs (after cameras are open)
+## 4. Hole ROIs (before cameras open)
 
-In the app: **Admin → Edit hole ROIs**. Quit `main.py` first if you must use the lab tool:
+In the app, after the manifold: **Camera setup → Place hole ROIs**. Quit `main.py` first if you must use the lab tool:
 
 ```bash
 python calibrate.py --cam 0 --config config/DALIA/hole_positions_cam0.json

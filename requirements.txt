@@ -1,6 +1,7 @@
 opencv-python
 numpy
 PyQt6
+openpyxl
 
 # Windows-only: USB port-path fingerprinting for deterministic camera-face mapping
 # Install on Windows: pip install wmi

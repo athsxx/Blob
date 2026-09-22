@@ -13,9 +13,9 @@ python diagnose_cameras.py
 python src/main.py
 ```
 
-Daily path (port map already saved): **Mode → live tiles → wait for Opening cameras → START**.
+Daily path (camera setup already saved): **Mode → manifold if needed → live tiles → wait for Opening cameras → START**.
 
-Place or fix hole ROIs from **Admin → Edit hole ROIs** after cameras are open. Do not run `calibrate.py` while `main.py` is live.
+To place holes again: start screen → **Redo camera setup**. Do not run `calibrate.py` while `main.py` is live.
 
 ---
 
@@ -29,11 +29,11 @@ python diagnose_cameras.py
 
 ### 2. Assign camera faces
 
-In the app, **Admin → Assign camera faces** (or the first-launch wizard). That writes `config/camera_port_map.json`. Quit and relaunch after a new assignment.
+After you pick the manifold, **Camera setup → Assign camera faces**. That writes `config/camera_port_map.json`. Continue opens the cameras. To do it again later, use **Redo camera setup** on the start screen.
 
-### 3. Edit hole ROIs
+### 3. Place hole ROIs and hole connections
 
-After the Opening-cameras overlay finishes: **Admin → PIN → Edit hole ROIs**. Pick a face, wait for the snapshot, drag ellipses, **Save**. Face A writes `config/DALIA/hole_positions_cam0.json` … Face F `cam5.json`.
+On the same camera setup page, before Continue: **Place hole ROIs** and **Hole connections**. Pick a face, wait for the freeze, drag ellipses, **Save**. Face A writes `config/DALIA/hole_positions_cam0.json` … Face F `cam5.json`. Hole connections accepts a spreadsheet (`.xlsx` / `.csv`) when you have one; the workbook is not in the repo yet.
 
 Lab fallback only after a full quit:
 

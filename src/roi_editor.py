@@ -1,10 +1,18 @@
-"""In-app freeze-and-drag hole ROI editor. Never opens a second VideoCapture."""
+"""In-app freeze-and-drag hole ROI editor.
+
+Setup (start screen): opens one USB camera at the capture-profile size, freezes
+a frame, then releases. Live workers must not be running.
+
+Live session: snapshot from the worker that already owns the device. Never a
+second VideoCapture while workers are alive.
+"""
 from __future__ import annotations
 
 import json
 import math
 import os
 import queue
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -23,6 +31,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from capture_profile import load_capture_profile
 from config_loader import (
     face_roi_basename,
     hole_ids_for_face,
@@ -36,6 +45,54 @@ SNAPSHOT_TIMEOUT_S = 5.0
 APPLY_TIMEOUT_S = 3.0
 FACE_ORDER = "ABCDEF"
 HANDLE_R = 7
+
+
+def grab_setup_snapshot(usb_index: int, config_dir: str, process_events=None):
+    """
+    Open one camera, grab a warmed frame at the locked capture size, release.
+
+    Same MJPG / width / height as live workers so saved ellipses match detection.
+    """
+    import cv2
+
+    profile = load_capture_profile(config_dir)
+    width = int(profile.get("width") or 320)
+    height = int(profile.get("height") or 240)
+    fps = float(profile.get("fps") or 5)
+    if sys.platform == "win32":
+        backend = cv2.CAP_DSHOW
+    elif sys.platform == "darwin":
+        backend = cv2.CAP_AVFOUNDATION
+    else:
+        backend = cv2.CAP_ANY
+    cap = None
+    frame = None
+    try:
+        cap = cv2.VideoCapture(int(usb_index), backend)
+        if not cap.isOpened():
+            return None
+        if sys.platform == "win32":
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv2.CAP_PROP_FPS, fps)
+        for i in range(20):
+            if process_events is not None:
+                process_events()
+            ok, im = cap.read()
+            if ok and im is not None:
+                frame = im
+            elif i == 0:
+                time.sleep(0.4)
+            else:
+                time.sleep(0.05)
+        return None if frame is None else frame.copy()
+    except Exception:
+        return None
+    finally:
+        if cap is not None:
+            cap.release()
+        time.sleep(0.3)
 
 
 def _bgr_to_qimage(frame: np.ndarray) -> QImage:
@@ -281,24 +338,26 @@ def wait_worker_event(snap_q, face: str, action: str, timeout_s: float) -> Optio
 
 
 class RoiEditorDialog(QDialog):
-    """Admin-only ROI session: snapshot from the live worker, drag ellipses, reload masks."""
+    """Setup-page ROI session: one camera at a time, then release. Live workers must not be running."""
 
     def __init__(
         self,
         manifold: str,
         config_dir: str,
         cameras: List[Dict[str, Any]],
-        comm_queues: Dict[str, Any],
-        snapshot_queue,
+        comm_queues: Optional[Dict[str, Any]] = None,
+        snapshot_queue=None,
         stylesheet: str = "",
         parent=None,
+        setup_mode: bool = False,
     ):
         super().__init__(parent)
         self._manifold = manifold
         self._config_dir = config_dir
         self._cameras = cameras
-        self._comm = comm_queues
+        self._comm = comm_queues or {}
         self._snap_q = snapshot_queue
+        self._setup_mode = bool(setup_mode) or not self._comm
         self._busy_flag = False
         self._frame_size = (320, 240)
         self._subdir = manifold_data_subdirectory(manifold, config_dir)
@@ -314,10 +373,18 @@ class RoiEditorDialog(QDialog):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(10)
 
-        hint = QLabel(
-            "Cameras stay open. Freeze a live frame, drag the ellipse onto the hole, "
-            "then Save. Hole names come from connectivity rules for this face."
-        )
+        if self._setup_mode:
+            hint_text = (
+                "Cameras are closed except the face you are editing. "
+                "A freeze is taken at the same size as live inspection (see capture lock). "
+                "Drag the ellipse onto the hole, then Save. Change face to recapture."
+            )
+        else:
+            hint_text = (
+                "Cameras stay open. Freeze a live frame, drag the ellipse onto the hole, "
+                "then Save. Hole names come from connectivity rules for this face."
+            )
+        hint = QLabel(hint_text)
         hint.setObjectName("pageHint")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -332,9 +399,14 @@ class RoiEditorDialog(QDialog):
             if c.get("enabled", True) and c.get("face")
         }
         for letter in FACE_ORDER:
-            if letter in enabled and letter in self._comm:
-                n_holes = len(hole_ids_for_face(self._rules, letter))
-                self.face_combo.addItem(f"Face {letter}  ({n_holes} rule holes)", userData=letter)
+            if letter not in enabled:
+                continue
+            if not self._setup_mode and letter not in self._comm:
+                continue
+            if self._setup_mode and self._usb_index(letter) is None:
+                continue
+            n_holes = len(hole_ids_for_face(self._rules, letter))
+            self.face_combo.addItem(f"Face {letter}  ({n_holes} rule holes)", userData=letter)
         tools.addWidget(self.face_combo)
 
         tools.addWidget(QLabel("Hole"))
@@ -368,9 +440,21 @@ class RoiEditorDialog(QDialog):
         self._overlay = SessionBusyOverlay(self)
         self.face_combo.currentIndexChanged.connect(self._on_face_changed)
         if self.face_combo.count() == 0:
-            self.status.setText("No live camera workers. Wait for Opening cameras to finish.")
+            if self._setup_mode:
+                self.status.setText("Assign camera faces first, then edit hole ROIs.")
+            else:
+                self.status.setText("No live camera workers. Return to the start screen to edit ROIs.")
         else:
             QTimer.singleShot(0, self._capture_current_face)
+
+    def _usb_index(self, face: str) -> Optional[int]:
+        for cam in self._cameras:
+            if str(cam.get("face", "")).upper() != str(face).upper():
+                continue
+            if cam.get("usb_index") is None:
+                return None
+            return int(cam["usb_index"])
+        return None
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -410,6 +494,9 @@ class RoiEditorDialog(QDialog):
 
     def _capture_current_face(self) -> None:
         face = self._current_face()
+        if self._setup_mode:
+            self._capture_setup_face(face)
+            return
         cq = self._comm.get(face)
         if cq is None or self._snap_q is None:
             self.status.setText(f"Face {face} has no live worker.")
@@ -434,7 +521,40 @@ class RoiEditorDialog(QDialog):
                 "Cameras stay up. Try again after the tile shows a picture.",
             )
             return
-        frame = msg["frame"]
+        self._apply_captured_frame(face, msg["frame"])
+
+    def _capture_setup_face(self, face: str) -> None:
+        from PyQt6.QtWidgets import QApplication
+
+        usb = self._usb_index(face)
+        if usb is None:
+            self.status.setText(f"Face {face} has no USB index. Assign camera faces first.")
+            QMessageBox.warning(
+                self,
+                "Edit hole ROIs",
+                f"Face {face} has no camera index. Assign camera faces first.",
+            )
+            return
+        self._set_busy(True, "Capturing snapshot…", f"Face {face} USB {usb}. Other cameras stay closed.")
+        self.status.setText(f"Opening Face {face} (USB {usb})…")
+        frame = grab_setup_snapshot(
+            usb,
+            self._config_dir,
+            process_events=QApplication.processEvents,
+        )
+        self._set_busy(False)
+        if frame is None:
+            self.status.setText(f"No frame from Face {face}. Camera was released.")
+            QMessageBox.warning(
+                self,
+                "Edit hole ROIs",
+                f"Could not freeze Face {face} (USB {usb}).\n"
+                "The camera was released. Check the cable, then try again.",
+            )
+            return
+        self._apply_captured_frame(face, frame)
+
+    def _apply_captured_frame(self, face: str, frame) -> None:
         h, w = frame.shape[:2]
         self._frame_size = (w, h)
         self.canvas.set_frame(frame)
@@ -443,8 +563,9 @@ class RoiEditorDialog(QDialog):
         self.canvas.ellipses = ellipses
         self.canvas.selected = 0 if ellipses else -1
         self._refresh_hole_combo(face)
+        released = "  ·  camera released" if self._setup_mode else ""
         self.status.setText(
-            f"Face {face}  {w}×{h}  ·  {len(ellipses)} hole(s)  ·  {os.path.basename(path)}"
+            f"Face {face}  {w}×{h}  ·  {len(ellipses)} hole(s)  ·  {os.path.basename(path)}{released}"
         )
         self.canvas.update()
 
@@ -480,7 +601,12 @@ class RoiEditorDialog(QDialog):
         face = self._current_face()
         path = self._roi_path(face)
         w, h = self._frame_size
-        self._set_busy(True, "Applying ROIs…", f"Saving Face {face} and reloading masks. Cameras stay open.")
+        busy_detail = (
+            f"Saving Face {face}. Camera stays closed."
+            if self._setup_mode
+            else f"Saving Face {face} and reloading masks. Cameras stay open."
+        )
+        self._set_busy(True, "Applying ROIs…", busy_detail)
         try:
             _save_circles(path, self.canvas.ellipses, w, h)
         except OSError as exc:
@@ -488,13 +614,14 @@ class RoiEditorDialog(QDialog):
             QMessageBox.critical(self, "Edit hole ROIs", f"Could not write:\n{path}\n{exc}")
             return
         cq = self._comm.get(face)
-        if cq is None:
+        if self._setup_mode or cq is None:
             self._set_busy(False)
             QMessageBox.information(
                 self,
-                "Saved on disk",
-                f"Wrote {len(self.canvas.ellipses)} hole(s) to:\n{path}\n"
-                "No live worker for this face — restart the app if overlays are missing.",
+                "ROIs saved",
+                f"Saved {len(self.canvas.ellipses)} hole(s) for Face {face}.\n"
+                f"{path}\n\n"
+                "Start Sequential when you are ready. Inspection will open cameras and load these holes.",
             )
             return
         try:

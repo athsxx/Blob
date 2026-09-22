@@ -129,13 +129,29 @@ def face_roi_basename(face: str) -> str:
     return f"hole_positions_cam{idx}.json"
 
 
+def load_last_session(config_dir: str) -> Dict[str, Any]:
+    path = os.path.join(config_dir, LAST_SESSION_FILE)
+    data = _load_json(path) if os.path.isfile(path) else None
+    return dict(data) if isinstance(data, dict) else {}
+
+
+def save_last_session(config_dir: str, **updates: Any) -> None:
+    """Merge fields into last_session.json. Does not drop setup_complete when saving a manifold."""
+    path = os.path.join(config_dir, LAST_SESSION_FILE)
+    data = load_last_session(config_dir)
+    data.update(updates)
+    try:
+        os.makedirs(config_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+    except OSError:
+        pass
+
+
 def load_last_manifold(config_dir: str, labels: Optional[List[str]] = None) -> str:
     known = labels or manifold_labels(config_dir)
-    path = os.path.join(config_dir, LAST_SESSION_FILE)
-    saved = ""
-    data = _load_json(path) if os.path.isfile(path) else None
-    if isinstance(data, dict):
-        saved = str(data.get("manifold") or "").strip()
+    saved = str(load_last_session(config_dir).get("manifold") or "").strip()
     if saved and saved in known:
         return saved
     if "DALIA" in known:
@@ -144,35 +160,22 @@ def load_last_manifold(config_dir: str, labels: Optional[List[str]] = None) -> s
 
 
 def save_last_manifold(config_dir: str, manifold: str) -> None:
-    path = os.path.join(config_dir, LAST_SESSION_FILE)
-    try:
-        os.makedirs(config_dir, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"manifold": str(manifold).strip()}, f, indent=2)
-            f.write("\n")
-    except OSError:
-        pass
+    save_last_session(config_dir, manifold=str(manifold).strip())
+
+
+def setup_is_complete(config_dir: str) -> bool:
+    return bool(load_last_session(config_dir).get("setup_complete"))
+
+
+def mark_setup_complete(config_dir: str, complete: bool = True) -> None:
+    save_last_session(config_dir, setup_complete=bool(complete))
 
 
 def hole_ids_for_face(rules: List[Dict[str, Any]], face: str) -> List[str]:
     """Unique hole_ids that appear as input or expected output on this face."""
-    want = str(face).strip().upper()
-    names: List[str] = []
-    seen = set()
-    for rule in rules or []:
-        inp = rule.get("input") or {}
-        if str(inp.get("face", "")).upper() == want:
-            hid = str(inp.get("hole_id") or "").strip()
-            if hid and hid not in seen:
-                seen.add(hid)
-                names.append(hid)
-        for out in rule.get("expected_outputs") or []:
-            if str(out.get("face", "")).upper() == want:
-                hid = str(out.get("hole_id") or "").strip()
-                if hid and hid not in seen:
-                    seen.add(hid)
-                    names.append(hid)
-    return names
+    from connectivity_rules_io import hole_ids_for_face as _ids
+
+    return _ids(rules, face)
 
 
 def _load_json(filepath: str) -> Optional[Dict[str, Any]]:
@@ -329,6 +332,13 @@ def load_rules(filepath: str = RULES_FILE) -> List[Dict[str, Any]]:
     rules = data.get("rules", [])
     print(f"[ConfigLoader] Loaded {len(rules)} connectivity rules.")
     return rules
+
+
+def save_rules(filepath: str, rules: List[Dict[str, Any]], backup: bool = True) -> str:
+    """Atomic write of connectivity_rules.json (backup to .bak)."""
+    from connectivity_rules_io import save_rules_atomic
+
+    return save_rules_atomic(filepath, rules, backup=backup)
 
 
 def get_rules_by_face(rules: List[Dict], face: str) -> List[Dict]:

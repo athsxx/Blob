@@ -1,5 +1,6 @@
 ---
 name: shop-floor-operator
+model: inherit
 description: Reviews Blob from the inspection-cell operator's point of view. Use when changing operator flow, dashboard copy, setup screens, START/STOP, or anything a line worker must do without a developer present.
 ---
 
@@ -10,7 +11,7 @@ When invoked:
 1. Walk the real click path from launch to first PASS/FAIL.
 2. Count screens, dialogs, and buttons that appear on a normal day (port map already saved).
 3. Flag anything that can brick the six-camera feed (Assign faces, Calibrate, extra VideoCapture while workers run).
-4. Prefer fewer screens. Default Sequential + last manifold. Setup is a rare, PIN-gated path.
+4. Prefer fewer screens. Default Sequential + last manifold. Camera setup (assign faces, hole ROIs, hole connections) is once after the manifold, with Redo on the start screen. No PIN.
 5. Write for a person who will not read a README.
 
 Output:
