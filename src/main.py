@@ -603,7 +603,7 @@ def main():
                         else:
                             dashboard.instruction_panel.status_lbl.setText("✓  ALL STEPS COMPLETE")
                             dashboard.instruction_panel.status_lbl.setStyleSheet(
-                                "color: #3fb950; font-size: 24px; font-weight: bold;"
+                                "color: #2f6b45; font-size: 24px; font-weight: bold;"
                             )
                             dashboard.instruction_panel.countdown_lbl.setText("")
                     QTimer.singleShot(2000, _advance_after_timeout)
@@ -775,7 +775,7 @@ def main():
                                                 "✓  ALL STEPS COMPLETE"
                                             )
                                             dashboard.instruction_panel.status_lbl.setStyleSheet(
-                                                "color: #3fb950; font-size: 24px; font-weight: bold;"
+                                                "color: #2f6b45; font-size: 24px; font-weight: bold;"
                                             )
                                             dashboard.instruction_panel.countdown_lbl.setText("")
 

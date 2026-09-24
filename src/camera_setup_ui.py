@@ -101,11 +101,11 @@ class FaceAssignWizardDialog(QDialog):
             self.setStyleSheet(stylesheet)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 16, 20, 16)
+        root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
 
         title = QLabel("Assign each USB camera to a manifold face (A–F)")
-        title.setStyleSheet("color: #f0f6fc; font-size: 14px; font-weight: bold;")
+        title.setObjectName("pageSectionTitle")
         root.addWidget(title)
 
         hint = QLabel(
@@ -115,16 +115,15 @@ class FaceAssignWizardDialog(QDialog):
             "not the USB index. After saving, restart inspection so workers reload."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #8b949e; font-size: 12px;")
+        hint.setObjectName("pageHint")
         root.addWidget(hint)
 
         self._status = QLabel("Click Scan cameras to capture snapshots (one device at a time).")
-        self._status.setStyleSheet("color: #79c0ff; font-size: 12px;")
+        self._status.setObjectName("pageMeta")
         root.addWidget(self._status)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
-        self._scroll.setStyleSheet("QScrollArea { border: 1px solid #30363d; border-radius: 6px; }")
         self._grid_host = QWidget()
         self._grid = QGridLayout(self._grid_host)
         self._grid.setSpacing(12)
@@ -140,7 +139,7 @@ class FaceAssignWizardDialog(QDialog):
         self._scan_btn.setObjectName("btnSetup")
         self._scan_btn.clicked.connect(self._start_scan)
         save_btn = QPushButton("Save assignment")
-        save_btn.setObjectName("btnStart")
+        save_btn.setObjectName("pagePrimary")
         save_btn.clicked.connect(self._save)
         close_btn = QPushButton("Cancel")
         close_btn.setObjectName("btnSetup")
@@ -200,10 +199,10 @@ class FaceAssignWizardDialog(QDialog):
         tile = QWidget()
         tl = QVBoxLayout(tile)
         tl.setContentsMargins(8, 8, 8, 8)
-        tl.setSpacing(6)
+        tl.setSpacing(8)
         img = QLabel()
         img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        img.setStyleSheet("background-color: #161b22; border-radius: 6px;")
+        img.setStyleSheet("background-color: #f3f1ea; border: 1px solid #d8d3c8; border-radius: 4px;")
         pix = _bgr_to_pixmap(cam.get("frame"))
         if pix.isNull():
             img.setText(f"USB {cam.get('index', '?')}\nNo picture")
@@ -216,7 +215,7 @@ class FaceAssignWizardDialog(QDialog):
             f"USB {cam.get('index', '?')}  ·  {cam.get('width', '?')}×{cam.get('height', '?')}\n{short}"
         )
         meta.setWordWrap(True)
-        meta.setStyleSheet("color: #8b949e; font-size: 11px;")
+        meta.setObjectName("pageMeta")
         tl.addWidget(meta)
         combo = QComboBox()
         combo.addItem("Skip (not used)", userData="")
@@ -305,7 +304,7 @@ class CalibrateRoiDialog(QDialog):
         if stylesheet:
             self.setStyleSheet(stylesheet)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
         layout.addWidget(QLabel("Lab fallback only — quit the inspection app first so USB is free:"))

@@ -13,7 +13,7 @@ class SessionBusyOverlay(QWidget):
         self.setObjectName("sessionBusyOverlay")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(
-            "QWidget#sessionBusyOverlay { background-color: rgba(13, 17, 23, 220); }"
+            "QWidget#sessionBusyOverlay { background-color: rgba(14, 39, 66, 90); }"
         )
         self.hide()
 
@@ -21,8 +21,8 @@ class SessionBusyOverlay(QWidget):
         card.setObjectName("formCard")
         card.setFixedWidth(480)
         inner = QVBoxLayout(card)
-        inner.setContentsMargins(28, 24, 28, 24)
-        inner.setSpacing(10)
+        inner.setContentsMargins(24, 24, 24, 24)
+        inner.setSpacing(12)
 
         self._title = QLabel("Please wait")
         self._title.setObjectName("pageTitleMain")
@@ -34,7 +34,7 @@ class SessionBusyOverlay(QWidget):
         self._detail.setWordWrap(True)
         self._pulse = QLabel("● ● ●")
         self._pulse.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._pulse.setStyleSheet("color: #58a6ff; font-size: 16px; letter-spacing: 0.4em;")
+        self._pulse.setStyleSheet("color: #810055; font-size: 16px; letter-spacing: 0.4em;")
         inner.addWidget(self._title)
         inner.addWidget(self._detail)
         inner.addWidget(self._pulse)

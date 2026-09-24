@@ -48,11 +48,13 @@ class _DryRunDialog(QDialog):
         if stylesheet:
             self.setStyleSheet(stylesheet)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         hint = QLabel(
             "This replaces the working hole map. Confirm only if the list looks right."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #8b949e;")
+        hint.setObjectName("pageHint")
         layout.addWidget(hint)
         body = QTextEdit()
         body.setReadOnly(True)
@@ -107,23 +109,23 @@ class RuleEditorDialog(QDialog):
         self._roi_names = roi_names_by_face(config_dir, self._folder)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
         title = QLabel("Hole connections")
-        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #f0f6fc;")
+        title.setObjectName("pageTitleMain")
         layout.addWidget(title)
         hint = QLabel(
             f"{manifold}  —  Laser goes in one hole; light should appear at one or more others. "
             "Names must match the labels on the face pictures."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #8b949e; font-size: 12px;")
+        hint.setObjectName("pageHint")
         layout.addWidget(hint)
 
         if inspection_running:
             warn = QLabel("STOP inspection before saving. Cameras stay open.")
-            warn.setStyleSheet("color: #d29922; font-weight: 600;")
+            warn.setStyleSheet("color: #8a5a12; font-weight: 600;")
             layout.addWidget(warn)
 
         self.table = QTableWidget(0, 4)
@@ -156,7 +158,7 @@ class RuleEditorDialog(QDialog):
 
         self.preview = QLabel()
         self.preview.setWordWrap(True)
-        self.preview.setStyleSheet("color: #8b949e; font-size: 12px;")
+        self.preview.setObjectName("pageHint")
         layout.addWidget(self.preview)
 
         save_row = QHBoxLayout()

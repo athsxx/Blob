@@ -138,13 +138,13 @@ class AddManifoldDialog(QDialog):
         root.addWidget(self.combo_template)
 
         self.btn_create = QPushButton("Create manifold on disk")
-        self.btn_create.setObjectName("btnStart")
+        self.btn_create.setObjectName("pagePrimary")
         self.btn_create.clicked.connect(self._on_create)
         root.addWidget(self.btn_create)
 
         self.status_lbl = QLabel("After creation, use Calibrate per face (USB indices match cameras.json).")
         self.status_lbl.setWordWrap(True)
-        self.status_lbl.setStyleSheet("color: #8b949e; font-size: 12px;")
+        self.status_lbl.setObjectName("pageHint")
         root.addWidget(self.status_lbl)
 
         faces_box = QGroupBox("ROI files per face (USB from cameras.json → calibrate.py --cam)")
