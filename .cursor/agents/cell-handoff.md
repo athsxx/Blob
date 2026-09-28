@@ -26,9 +26,11 @@ You are continuing the Godrej DALIA manifold inspection app (repo Blob, branch `
 
 Every later shift: mode → manifold if needed → live → START.
 
-## Excel ingest (workbook not in the repo yet)
+## Excel ingest
 
-The owner will supply the spreadsheet later. Do not invent hole geometry or a fake workbook.
+The DALIA workbook is `config/DALIA/dalia_manifold_inspection.xlsx`. Rules in `connectivity_rules.json` come from that sheet. Hole ROI files are empty until the shop floor places ellipses. Do not invent hole pixel positions. T-T and Z-Z counters, and the Face E insert `C2, C3`, are not in the rules until they are named.
+
+A face written `C-F`, `A-F`, `A-E`, or `B-C` is one hole visible on both cameras. Light on either camera counts. A shorter face list means the last face covers the remaining holes.
 
 Linked path (no loose ends):
 
@@ -39,7 +41,7 @@ Linked path (no loose ends):
 - Dashboard camera-setup page button **Hole connections** opens `RuleEditorDialog` for the manifold just selected.
 - `NAMING_CONVENTION.md` — hole ids in ROI `name` must match rule `hole_id` or every step fails.
 
-Existing data, do not delete unless asked: `config/DALIA/connectivity_rules.json` (74 rules), `hole_positions_cam0`–`cam4` with circles, `cam5` (Face F) empty. Inspection will not start if the rules file is missing or empty. Face F empty does not bring setup back.
+Existing data: `config/DALIA/connectivity_rules.json` is generated from the workbook. `hole_positions_cam0`–`cam5` have empty `circles` until ROIs are placed. Inspection will not start if the rules file is missing or empty. Empty Face F does not bring setup back.
 
 ## History that must not be redone
 

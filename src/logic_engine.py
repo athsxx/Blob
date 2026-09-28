@@ -750,15 +750,17 @@ class LogicEngine:
                 continue
             if rule_has_unavailable_output(rule, available_faces):
                 continue
-            input_face = str(rule.get("input", {}).get("face", "")).upper()
-            if input_face and input_face not in available_faces:
+            input_faces = parse_face_to_faces(str(rule.get("input", {}).get("face", "")))
+            if input_faces and all(f not in available_faces for f in input_faces):
                 continue
             seen_rule_ids.add(rid)
             eligible.append(rule)
 
-        # Sort by input face order, then by hole_id alphabetically
+        # Sort by the first input face, then by hole_id alphabetically.
+        # A compound face such as A_F is still one step.
         def _sort_key(rule: Dict) -> tuple:
-            face = rule.get('input', {}).get('face', 'Z')
+            faces = parse_face_to_faces(str(rule.get('input', {}).get('face', '')))
+            face = faces[0] if faces else 'Z'
             hole = rule.get('input', {}).get('hole_id', '')
             face_idx = face_order.index(face) if face in face_order else 99
             return (face_idx, hole)
@@ -777,11 +779,14 @@ class LogicEngine:
                 out_face = output.get('face', '')
                 out_hole = output.get('hole_id', '')
                 candidate_faces = parse_face_to_faces(out_face)
-                # Keep outputs that have at least one available candidate face
                 available_candidates = [f for f in candidate_faces if f in available_faces]
                 if available_candidates:
-                    # Use first available candidate face for display
-                    display_face = available_candidates[0]
+                    # Keep every camera that can see this hole. Light on any one counts.
+                    display_face = (
+                        available_candidates[0]
+                        if len(available_candidates) == 1
+                        else "_".join(available_candidates)
+                    )
                     expected_outputs.append({
                         'face': display_face,
                         'hole_id': out_hole,
@@ -830,7 +835,11 @@ class LogicEngine:
             candidate_faces = parse_face_to_faces(out_face)
             available_candidates = [f for f in candidate_faces if f in available_faces]
             if available_candidates:
-                display_face = available_candidates[0]
+                display_face = (
+                    available_candidates[0]
+                    if len(available_candidates) == 1
+                    else "_".join(available_candidates)
+                )
                 expected_outputs.append({
                     "face": display_face,
                     "hole_id": out_hole,

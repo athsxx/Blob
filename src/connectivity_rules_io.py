@@ -1,9 +1,10 @@
 """
 Normalize, validate, merge, diff, and save connectivity_rules.json.
 
-Excel/CSV ingest is a stub until the workbook headers are bound. Both the
-type-in editor and the spreadsheet path write the same JSON contract that
-LogicEngine.load_rules already understands.
+The DALIA inspection workbook uses Insert / Input View / Open To Check /
+Output View. A hyphenated face such as C-F is one hole visible on both
+cameras. Both the type-in editor and the spreadsheet path write the same
+JSON contract that LogicEngine.load_rules already understands.
 """
 from __future__ import annotations
 
@@ -49,18 +50,22 @@ _HEADER_ALIASES = {
     "input_face": {
         "input face", "from face", "laser face", "laser in face",
         "input_face", "face", "a-f",
+        "input view (flashlight)", "input view",
     },
     "input_hole": {
         "input hole", "from hole", "laser hole", "laser in hole",
         "input_hole", "hole", "section", "hole id", "input hole id",
+        "insert rod / passlight", "insert rod", "passlight",
     },
     "output_face": {
         "output face", "to face", "exit face", "light face",
         "output_face", "light should appear face",
+        "output view (lightbulb)", "output view",
     },
     "output_hole": {
         "output hole", "to hole", "exit hole", "light hole",
         "output_hole", "light should appear hole", "output hole id",
+        "open to check (for inspection)", "open to check",
     },
     "logic": {"logic", "and/or", "and or"},
     "mandatory": {"mandatory", "required"},
@@ -120,23 +125,22 @@ def normalize_hole_id(raw: Any) -> str:
         return ""
     text = text.replace("ø", "Ø").replace("Ø".lower(), "Ø")
     text = text.replace("phi", "Ø").replace("PHI", "Ø")
-    alias_key = re.sub(r"[\s\-]+", "_", text.upper())
+    alias_key = re.sub(r"[^A-Z0-9Ø]+", "_", text.upper())
+    alias_key = re.sub(r"_+", "_", alias_key).strip("_")
     if alias_key in _HOLE_ALIASES:
         return _HOLE_ALIASES[alias_key]
-    text = re.sub(r"[\s\-]+", "_", text)
-    return text
+    return alias_key
+
+
+def is_unnamed_counter(raw: Any) -> bool:
+    """T-T and Z-Z counters are two holes each and are not named yet."""
+    key = normalize_hole_id(raw)
+    return "COUNTER" in key and ("T_T" in key or "Z_Z" in key)
 
 
 def normalize_input_face(raw: Any) -> str:
-    """Excel A-F / C-F means diagonal; first letter is the input face."""
-    text = _nfc(raw).strip().upper().replace(" ", "")
-    if not text:
-        return ""
-    text = text.replace("/", "-").replace("_OR_", "-").replace("_", "-")
-    for ch in text:
-        if ch in VALID_FACES:
-            return ch
-    return ""
+    """A-F / C-F is one hole visible on both cameras, same form as an output face."""
+    return normalize_output_face(raw)
 
 
 def normalize_output_face(raw: Any) -> str:
@@ -178,6 +182,73 @@ def normalize_output_face(raw: Any) -> str:
 
 def make_rule_id(face: str, hole_id: str) -> str:
     return f"FACE_{face}_{hole_id}"
+
+
+def split_cell_list(raw: Any) -> List[str]:
+    """Split a cell on commas that are not inside parentheses."""
+    text = _nfc(raw).strip()
+    if not text:
+        return []
+    parts: List[str] = []
+    buf: List[str] = []
+    depth = 0
+    for ch in text:
+        if ch == "(":
+            depth += 1
+            buf.append(ch)
+        elif ch == ")":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+        elif ch == "," and depth == 0:
+            part = "".join(buf).strip()
+            if part:
+                parts.append(part)
+            buf = []
+        else:
+            buf.append(ch)
+    part = "".join(buf).strip()
+    if part:
+        parts.append(part)
+    return parts
+
+
+def _join_faces(faces: Sequence[str]) -> str:
+    letters: List[str] = []
+    for face in faces:
+        for letter in parse_face_to_faces(normalize_output_face(face)) or []:
+            if letter not in letters:
+                letters.append(letter)
+    if not letters:
+        return ""
+    if len(letters) == 1:
+        return letters[0]
+    return "-".join(letters)
+
+
+def pair_exit_holes_and_faces(
+    holes: Sequence[str], faces: Sequence[str]
+) -> List[Tuple[str, str]]:
+    """Pair exits from the left.
+
+    Extra holes stay on the last face. Extra faces mean the last hole is
+    visible on each of those faces.
+    """
+    hole_list = [h for h in holes if str(h).strip()]
+    face_list = [f for f in faces if str(f).strip()]
+    if not hole_list or not face_list:
+        return []
+    if len(hole_list) == len(face_list):
+        return list(zip(hole_list, face_list))
+    if len(hole_list) > len(face_list):
+        head = len(face_list) - 1
+        paired = list(zip(hole_list[:head], face_list[:head]))
+        last_face = face_list[-1]
+        paired.extend((hole, last_face) for hole in hole_list[head:])
+        return paired
+    head = len(hole_list) - 1
+    paired = list(zip(hole_list[:head], face_list[:head]))
+    paired.append((hole_list[-1], _join_faces(face_list[head:])))
+    return paired
 
 
 def _truthy(raw: Any) -> bool:
@@ -320,7 +391,7 @@ def validate_rules(rules: Sequence[Dict[str, Any]]) -> List[str]:
         rid = rule["rule_id"]
         face = rule["input"]["face"]
         hole = rule["input"]["hole_id"]
-        if face not in VALID_FACES:
+        if not parse_face_to_faces(face):
             errors.append(f"Rule {i} ({rid}): laser face must be A–F, got {face!r}")
         if not hole:
             errors.append(f"Rule {i} ({rid}): laser hole is empty")
@@ -349,7 +420,7 @@ def hole_ids_for_face(rules: Sequence[Dict[str, Any]], face: str) -> List[str]:
     seen: Set[str] = set()
     for rule in rules or []:
         inp = rule.get("input") or {}
-        if str(inp.get("face", "")).upper() == want:
+        if want in parse_face_to_faces(str(inp.get("face", ""))):
             hid = str(inp.get("hole_id") or "").strip()
             if hid and hid not in seen:
                 seen.add(hid)
@@ -421,8 +492,8 @@ def guided_step_count(
             continue
         if rule_has_unavailable_output(rule, faces):
             continue
-        input_face = str((rule.get("input") or {}).get("face", "")).upper()
-        if input_face and input_face not in faces:
+        input_faces = parse_face_to_faces(str((rule.get("input") or {}).get("face", "")))
+        if input_faces and all(f not in faces for f in input_faces):
             continue
         seen.add(rid)
         n += 1
@@ -634,10 +705,43 @@ def _rows_from_table(headers: Sequence[str], data_rows: Sequence[Sequence[Any]])
             logic=_logic(_cell(row, mapped.get("logic"))) if "logic" in mapped else DEFAULT_LOGIC,
             source_row=n,
         )
-        if not (base.input_face and base.input_hole and base.output_face and base.output_hole):
-            parsed.errors.append(f"Row {n}: missing laser-in or light-out face/hole")
+        if not base.input_hole and not base.output_hole:
             continue
-        parsed.rows.append(base)
+        inserts = split_cell_list(base.input_hole)
+        exits = pair_exit_holes_and_faces(
+            split_cell_list(base.output_hole),
+            split_cell_list(base.output_face),
+        )
+        if len(inserts) != 1 or not exits:
+            parsed.errors.append(
+                f"Row {n}: held ({base.input_hole or 'blank insert'} → {base.output_hole})"
+            )
+            continue
+        if is_unnamed_counter(inserts[0]) or any(is_unnamed_counter(hole) for hole, _face in exits):
+            parsed.errors.append(
+                f"Row {n}: held, unnamed counter ({inserts[0]})"
+            )
+            continue
+        base.input_hole = inserts[0]
+        parsed.rows.append(ConnectionRow(
+            input_face=base.input_face,
+            input_hole=base.input_hole,
+            output_face=exits[0][1],
+            output_hole=exits[0][0],
+            mandatory=base.mandatory,
+            logic=base.logic,
+            source_row=n,
+        ))
+        for hole, face in exits[1:]:
+            parsed.rows.append(ConnectionRow(
+                input_face=base.input_face,
+                input_hole=base.input_hole,
+                output_face=face,
+                output_hole=hole,
+                mandatory=base.mandatory,
+                logic=base.logic,
+                source_row=n,
+            ))
         for _n, fcol, hcol in extras:
             oface = _cell(row, fcol)
             ohole = _cell(row, hcol)
@@ -726,9 +830,40 @@ def parse_spreadsheet(path: str) -> SpreadsheetParse:
     return parsed
 
 
+def without_conflicting_inputs(
+    rows: Sequence[ConnectionRow],
+) -> Tuple[List[ConnectionRow], List[str]]:
+    """Drop an insert that the sheet describes twice with different exits."""
+    by_key: Dict[Tuple[str, str], Dict[int, Set[Tuple[str, str]]]] = {}
+    for row in rows:
+        key = (normalize_input_face(row.input_face), normalize_hole_id(row.input_hole))
+        src = row.source_row if row.source_row is not None else id(row)
+        by_key.setdefault(key, {}).setdefault(src, set()).add(
+            (normalize_output_face(row.output_face), normalize_hole_id(row.output_hole))
+        )
+    blocked: Set[Tuple[str, str]] = set()
+    notes: List[str] = []
+    for key, sources in by_key.items():
+        signatures = {frozenset(exits) for exits in sources.values()}
+        if len(signatures) > 1:
+            blocked.add(key)
+            notes.append(
+                f"Held overlapping insert {key[0]} {key[1]} "
+                f"({len(signatures)} different exit lists)"
+            )
+    kept = [
+        row for row in rows
+        if (normalize_input_face(row.input_face), normalize_hole_id(row.input_hole)) not in blocked
+    ]
+    return kept, notes
+
+
 def rules_from_spreadsheet(path: str) -> Tuple[List[Dict[str, Any]], SpreadsheetParse]:
     parsed = parse_spreadsheet(path)
     if parsed.errors and not parsed.rows:
         return [], parsed
-    rules = merge_connection_rows(parsed.rows)
+    kept, notes = without_conflicting_inputs(parsed.rows)
+    parsed.rows = kept
+    parsed.errors.extend(notes)
+    rules = merge_connection_rows(kept)
     return rules, parsed

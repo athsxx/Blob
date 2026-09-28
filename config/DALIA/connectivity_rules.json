@@ -44,9 +44,9 @@
       }
     },
     {
-      "rule_id": "FACE_A_A26",
+      "rule_id": "FACE_A_E_A26",
       "input": {
-        "face": "A",
+        "face": "A_E",
         "hole_id": "A26"
       },
       "expected_outputs": [
@@ -73,9 +73,9 @@
       }
     },
     {
-      "rule_id": "FACE_A_A14",
+      "rule_id": "FACE_A_F_A14",
       "input": {
-        "face": "A",
+        "face": "A_F",
         "hole_id": "A14"
       },
       "expected_outputs": [
@@ -97,9 +97,9 @@
       }
     },
     {
-      "rule_id": "FACE_A_A15",
+      "rule_id": "FACE_A_F_A15",
       "input": {
-        "face": "A",
+        "face": "A_F",
         "hole_id": "A15"
       },
       "expected_outputs": [
@@ -121,9 +121,9 @@
       }
     },
     {
-      "rule_id": "FACE_A_A18",
+      "rule_id": "FACE_A_F_A18",
       "input": {
-        "face": "A",
+        "face": "A_F",
         "hole_id": "A18"
       },
       "expected_outputs": [
@@ -169,10 +169,10 @@
       }
     },
     {
-      "rule_id": "FACE_A_\u00d84_ROUND_HOLE",
+      "rule_id": "FACE_A_Ø4_ROUND_HOLE",
       "input": {
         "face": "A",
-        "hole_id": "\u00d84_ROUND_HOLE"
+        "hole_id": "Ø4_ROUND_HOLE"
       },
       "expected_outputs": [
         {
@@ -188,34 +188,20 @@
       }
     },
     {
-      "rule_id": "FACE_A_\u00d84_OVAL_HOLE",
+      "rule_id": "FACE_A_Ø4_OVAL_HOLE",
       "input": {
         "face": "A",
-        "hole_id": "\u00d84_OVAL_HOLE"
+        "hole_id": "Ø4_OVAL_HOLE"
       },
       "expected_outputs": [
         {
           "face": "B",
           "hole_id": "SEC_T_T",
           "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
-      "rule_id": "FACE_B_SEC_Z_Z_COUNTER",
-      "input": {
-        "face": "B",
-        "hole_id": "SEC_Z_Z_COUNTER"
-      },
-      "expected_outputs": [
+        },
         {
-          "face": "E",
-          "hole_id": "B2",
+          "face": "B",
+          "hole_id": "Ø6_5_SR_NO_1185_LD_LD",
           "mandatory": true
         }
       ],
@@ -245,34 +231,15 @@
       }
     },
     {
-      "rule_id": "FACE_B_\u00d894_SR_NO_426",
+      "rule_id": "FACE_B_Ø9_4_SR_NO_426",
       "input": {
         "face": "B",
-        "hole_id": "\u00d894_SR_NO_426"
+        "hole_id": "Ø9_4_SR_NO_426"
       },
       "expected_outputs": [
         {
           "face": "F",
           "hole_id": "B9",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
-      "rule_id": "FACE_B_CENTRE_HOLE_OBLONG",
-      "input": {
-        "face": "B",
-        "hole_id": "CENTRE_HOLE_OBLONG"
-      },
-      "expected_outputs": [
-        {
-          "face": "C",
-          "hole_id": "A24",
           "mandatory": true
         }
       ],
@@ -293,29 +260,10 @@
           "face": "C",
           "hole_id": "B1",
           "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
-      "rule_id": "FACE_B_SEC_T_T_COUNTER",
-      "input": {
-        "face": "B",
-        "hole_id": "SEC_T_T_COUNTER"
-      },
-      "expected_outputs": [
-        {
-          "face": "B",
-          "hole_id": "B16",
-          "mandatory": true
         },
         {
-          "face": "E",
-          "hole_id": "B19",
+          "face": "C",
+          "hole_id": "SEC_P_P",
           "mandatory": true
         }
       ],
@@ -374,44 +322,6 @@
       }
     },
     {
-      "rule_id": "FACE_B_SEC_T_T_COUNTER",
-      "input": {
-        "face": "B",
-        "hole_id": "SEC_T_T_COUNTER"
-      },
-      "expected_outputs": [
-        {
-          "face": "C",
-          "hole_id": "SEC_P_P",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
-      "rule_id": "FACE_B_SEC_T_T_COUNTER",
-      "input": {
-        "face": "B",
-        "hole_id": "SEC_T_T_COUNTER"
-      },
-      "expected_outputs": [
-        {
-          "face": "E",
-          "hole_id": "B11",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
       "rule_id": "FACE_B_A13",
       "input": {
         "face": "B",
@@ -419,8 +329,23 @@
       },
       "expected_outputs": [
         {
-          "face": "A",
+          "face": "B",
           "hole_id": "SEC_M_M",
+          "mandatory": true
+        },
+        {
+          "face": "A",
+          "hole_id": "A14",
+          "mandatory": true
+        },
+        {
+          "face": "A",
+          "hole_id": "A15",
+          "mandatory": true
+        },
+        {
+          "face": "A",
+          "hole_id": "A7",
           "mandatory": true
         }
       ],
@@ -527,25 +452,6 @@
       }
     },
     {
-      "rule_id": "FACE_B_SEC_Z_Z_COUNTER",
-      "input": {
-        "face": "B",
-        "hole_id": "SEC_Z_Z_COUNTER"
-      },
-      "expected_outputs": [
-        {
-          "face": "D",
-          "hole_id": "B7",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
       "rule_id": "FACE_B_SEC_M1_M1_A",
       "input": {
         "face": "B",
@@ -594,10 +500,10 @@
       }
     },
     {
-      "rule_id": "FACE_B_ANGULAR_HOLE",
+      "rule_id": "FACE_B_ANGULAR_HOLE_LDLD",
       "input": {
         "face": "B",
-        "hole_id": "ANGULAR_HOLE"
+        "hole_id": "ANGULAR_HOLE_LDLD"
       },
       "expected_outputs": [
         {
@@ -607,7 +513,7 @@
         },
         {
           "face": "A",
-          "hole_id": "\u00d84_OVAL_HOLE_SR_NO_978",
+          "hole_id": "Ø4_OVAL_HOLE_SR_NO_978",
           "mandatory": true
         }
       ],
@@ -618,10 +524,10 @@
       }
     },
     {
-      "rule_id": "FACE_B_STRIGHT_HOLE",
+      "rule_id": "FACE_B_STRIGHT_HOLE_LELE",
       "input": {
         "face": "B",
-        "hole_id": "STRIGHT_HOLE"
+        "hole_id": "STRIGHT_HOLE_LELE"
       },
       "expected_outputs": [
         {
@@ -631,7 +537,7 @@
         },
         {
           "face": "C",
-          "hole_id": "\u00d84_OVAL_HOLE_SR_NO_1079",
+          "hole_id": "Ø4_OVAL_HOLE_SR_NO_1079",
           "mandatory": true
         }
       ],
@@ -751,7 +657,7 @@
         },
         {
           "face": "B_C",
-          "hole_id": "\u00d8914_SR_NO_426___A",
+          "hole_id": "Ø9_14_SR_NO_426_A",
           "mandatory": true
         }
       ],
@@ -770,7 +676,7 @@
       "expected_outputs": [
         {
           "face": "B",
-          "hole_id": "\u00d8914_SR_NO_426_A__B",
+          "hole_id": "Ø9_14_SR_NO_426_A_B",
           "mandatory": true
         }
       ],
@@ -839,6 +745,11 @@
           "face": "B",
           "hole_id": "SEC_N_N",
           "mandatory": true
+        },
+        {
+          "face": "B",
+          "hole_id": "CENTRE_HOLE",
+          "mandatory": true
         }
       ],
       "logic": "AND",
@@ -872,10 +783,10 @@
       }
     },
     {
-      "rule_id": "FACE_C_\u00d84_ROUND_HOLE",
+      "rule_id": "FACE_C_Ø4_ROUND_HOLE",
       "input": {
         "face": "C",
-        "hole_id": "\u00d84_ROUND_HOLE"
+        "hole_id": "Ø4_ROUND_HOLE"
       },
       "expected_outputs": [
         {
@@ -891,15 +802,20 @@
       }
     },
     {
-      "rule_id": "FACE_C_\u00d84_OVAL_HOLE",
+      "rule_id": "FACE_C_Ø4_OVAL_HOLE",
       "input": {
         "face": "C",
-        "hole_id": "\u00d84_OVAL_HOLE"
+        "hole_id": "Ø4_OVAL_HOLE"
       },
       "expected_outputs": [
         {
           "face": "B",
           "hole_id": "SEC_Z_Z",
+          "mandatory": true
+        },
+        {
+          "face": "B",
+          "hole_id": "Ø6_5_SR_NO_1188_LE_LE",
           "mandatory": true
         }
       ],
@@ -910,9 +826,9 @@
       }
     },
     {
-      "rule_id": "FACE_C_A23",
+      "rule_id": "FACE_C_F_A23",
       "input": {
-        "face": "C",
+        "face": "C_F",
         "hole_id": "A23"
       },
       "expected_outputs": [
@@ -934,9 +850,9 @@
       }
     },
     {
-      "rule_id": "FACE_C_A24",
+      "rule_id": "FACE_C_F_A24",
       "input": {
-        "face": "C",
+        "face": "C_F",
         "hole_id": "A24"
       },
       "expected_outputs": [
@@ -984,7 +900,7 @@
       },
       "expected_outputs": [
         {
-          "face": "A___E",
+          "face": "A_E",
           "hole_id": "A26",
           "mandatory": true
         }
@@ -1092,54 +1008,6 @@
       }
     },
     {
-      "rule_id": "FACE_D_B7",
-      "input": {
-        "face": "D",
-        "hole_id": "B7"
-      },
-      "expected_outputs": [
-        {
-          "face": "F",
-          "hole_id": "B3",
-          "mandatory": true
-        },
-        {
-          "face": "B",
-          "hole_id": "SEC_Z_Z_COUNTER",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
-      "rule_id": "FACE_E_B2",
-      "input": {
-        "face": "E",
-        "hole_id": "B2"
-      },
-      "expected_outputs": [
-        {
-          "face": "B",
-          "hole_id": "SEC_N1_N1",
-          "mandatory": true
-        },
-        {
-          "face": "B",
-          "hole_id": "SEC_Z_Z_COUNTER",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
       "rule_id": "FACE_E_A11",
       "input": {
         "face": "E",
@@ -1147,7 +1015,7 @@
       },
       "expected_outputs": [
         {
-          "face": "E",
+          "face": "E_B",
           "hole_id": "CENTRE_HOLE",
           "mandatory": true
         }
@@ -1183,35 +1051,6 @@
       }
     },
     {
-      "rule_id": "FACE_E_B19",
-      "input": {
-        "face": "E",
-        "hole_id": "B19"
-      },
-      "expected_outputs": [
-        {
-          "face": "B",
-          "hole_id": "B16",
-          "mandatory": true
-        },
-        {
-          "face": "B",
-          "hole_id": "SEC_T_T_COUNTER",
-          "mandatory": true
-        },
-        {
-          "face": "B",
-          "hole_id": "A13",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
       "rule_id": "FACE_E_A27",
       "input": {
         "face": "E",
@@ -1226,30 +1065,6 @@
         {
           "face": "B",
           "hole_id": "CENTRE_HOLE",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
-      "rule_id": "FACE_E_B11",
-      "input": {
-        "face": "E",
-        "hole_id": "B11"
-      },
-      "expected_outputs": [
-        {
-          "face": "A_E",
-          "hole_id": "A26",
-          "mandatory": true
-        },
-        {
-          "face": "B",
-          "hole_id": "SEC_T_T_COUNTER",
           "mandatory": true
         }
       ],
@@ -1331,30 +1146,6 @@
         {
           "face": "D",
           "hole_id": "A25",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
-      "rule_id": "FACE_E_C2_C3",
-      "input": {
-        "face": "E",
-        "hole_id": "C2_C3"
-      },
-      "expected_outputs": [
-        {
-          "face": "B",
-          "hole_id": "SEC_M_M",
-          "mandatory": true
-        },
-        {
-          "face": "B",
-          "hole_id": "SEC_N_N",
           "mandatory": true
         }
       ],
@@ -1461,30 +1252,6 @@
       }
     },
     {
-      "rule_id": "FACE_F_B3",
-      "input": {
-        "face": "F",
-        "hole_id": "B3"
-      },
-      "expected_outputs": [
-        {
-          "face": "B",
-          "hole_id": "SEC_Z_Z_COUNTER",
-          "mandatory": true
-        },
-        {
-          "face": "D",
-          "hole_id": "B7",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
       "rule_id": "FACE_F_B4",
       "input": {
         "face": "F",
@@ -1493,7 +1260,7 @@
       "expected_outputs": [
         {
           "face": "B",
-          "hole_id": "\u00d81232_SR_NO_324",
+          "hole_id": "Ø12_32_SR_NO_324",
           "mandatory": true
         },
         {
@@ -1533,10 +1300,10 @@
       }
     },
     {
-      "rule_id": "FACE_F_\u00d8561_SR_NO_474",
+      "rule_id": "FACE_F_Ø5_61_SR_NO_474",
       "input": {
         "face": "F",
-        "hole_id": "\u00d8561_SR_NO_474"
+        "hole_id": "Ø5_61_SR_NO_474"
       },
       "expected_outputs": [
         {
@@ -1603,60 +1370,12 @@
       "expected_outputs": [
         {
           "face": "B",
-          "hole_id": "\u00d8914_SR_NO_426___B",
+          "hole_id": "Ø9_14_SR_NO_426_B",
           "mandatory": true
         },
         {
           "face": "B",
           "hole_id": "B17",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
-      "rule_id": "FACE_F_A23",
-      "input": {
-        "face": "F",
-        "hole_id": "A23"
-      },
-      "expected_outputs": [
-        {
-          "face": "B",
-          "hole_id": "SEC_N_N",
-          "mandatory": true
-        },
-        {
-          "face": "D",
-          "hole_id": "A22",
-          "mandatory": true
-        }
-      ],
-      "logic": "AND",
-      "timing": {
-        "max_delay_ms": 250,
-        "min_stable_frames": 3
-      }
-    },
-    {
-      "rule_id": "FACE_F_A24",
-      "input": {
-        "face": "F",
-        "hole_id": "A24"
-      },
-      "expected_outputs": [
-        {
-          "face": "B",
-          "hole_id": "SEC_N_N",
-          "mandatory": true
-        },
-        {
-          "face": "B",
-          "hole_id": "CENTRE_HOLE_OBLONG_HOLE",
           "mandatory": true
         }
       ],

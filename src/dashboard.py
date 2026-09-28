@@ -36,7 +36,13 @@ import numpy as np
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Set
 
-from logic_engine import rule_has_unavailable_output
+from logic_engine import parse_face_to_faces, rule_has_unavailable_output
+
+
+def _face_label(face: str) -> str:
+    """Show a compound face as C/F. Stored rules keep C_F."""
+    letters = parse_face_to_faces(str(face or ""))
+    return "/".join(letters) if letters else str(face or "?")
 from config_loader import (
     manifold_labels,
     manifold_folder_for_label,
@@ -686,7 +692,7 @@ class StepListPanel(QFrame):
             icon.setStyleSheet("color: #8a8580; font-size: 12px; min-width: 14px;")
             icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            text = QLabel(f"{num:02d}.  {face} · {hole}")
+            text = QLabel(f"{num:02d}.  {_face_label(face)} · {hole}")
             text.setStyleSheet("color: #5c6158; font-size: 11px;")
 
             rl.addWidget(icon)
@@ -878,7 +884,7 @@ class InstructionPanel(QFrame):
         outs = step.get('expected_outputs', [])
 
         self.step_lbl.setText(f"STEP  {num}  of  {total_steps}")
-        self.face_hole_lbl.setText(f"{face}  ·  {hole}")
+        self.face_hole_lbl.setText(f"{_face_label(face)}  ·  {hole}")
 
         for lbl in self._out_labels:
             self._out_layout.removeWidget(lbl)
@@ -886,7 +892,9 @@ class InstructionPanel(QFrame):
         self._out_labels.clear()
 
         for out in outs:
-            lbl = QLabel(f"● {out.get('face','?')}  →  {out.get('hole_id','?')}")
+            lbl = QLabel(
+                f"● {_face_label(out.get('face', '?'))}  →  {out.get('hole_id', '?')}"
+            )
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet("color: #0f1216; font-size: 13px;")
             self._out_layout.addWidget(lbl)
@@ -2344,33 +2352,35 @@ class DashboardWindow(QMainWindow):
             self.instruction_panel.show_step(step, total)
             self.progress_bar.setValue(step_index)
             
-            # Dynamic Hero Update
             input_face = step.get('input_face')
-            if input_face:
-                self.set_hero_camera(input_face)
-            
-            # Update target labels on camera widgets
             input_hole = step.get('input_hole', '')
             expected_outputs = step.get('expected_outputs', [])
-            
-            # Clear all target labels first
+            visible = set(self.enabled_faces())
+            input_cameras = [
+                face for face in parse_face_to_faces(str(input_face or ""))
+                if face in visible
+            ]
+            if input_cameras:
+                self.set_hero_camera(input_cameras[0])
+
+            labels: Dict[str, List[str]] = {}
+            if input_hole:
+                for face in input_cameras:
+                    labels.setdefault(face, []).append(f"INSERT → {input_hole}")
+            for out in expected_outputs:
+                out_hole = out.get('hole_id', '')
+                if not out_hole:
+                    continue
+                for face in parse_face_to_faces(str(out.get('face', ''))):
+                    if face in visible:
+                        labels.setdefault(face, []).append(f"EXPECT → {out_hole}")
+
             for cw in self.camera_widgets.values():
                 cw.set_target_label(None)
-            
-            # Set target on input face camera
-            if input_face and input_hole:
-                input_cw = self.camera_widgets.get(f"CAM_{input_face}")
-                if input_cw:
-                    input_cw.set_target_label(f"INSERT → {input_hole}")
-            
-            # Set expected output targets on their cameras
-            for out in expected_outputs:
-                out_face = out.get('face', '')
-                out_hole = out.get('hole_id', '')
-                if out_face and out_hole:
-                    out_cw = self.camera_widgets.get(f"CAM_{out_face}")
-                    if out_cw:
-                        out_cw.set_target_label(f"EXPECT → {out_hole}")
+            for face, parts in labels.items():
+                cw = self.camera_widgets.get(f"CAM_{face}")
+                if cw:
+                    cw.set_target_label(" | ".join(parts))
 
     def update_step_result(self, step_index: int, passed: bool):
         if step_index < 0 or not self._guided_sequence or step_index >= len(self._guided_sequence):
