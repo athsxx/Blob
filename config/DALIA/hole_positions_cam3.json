@@ -1,1 +1,72 @@
-{"circles": []}
+{
+  "calib_width": 320,
+  "calib_height": 240,
+  "circles": [
+    {
+      "name": "A25",
+      "coords": [
+        127,
+        97,
+        6
+      ],
+      "w": 6,
+      "h": 5,
+      "angle": 0
+    },
+    {
+      "name": "CENTRE_HOLE",
+      "coords": [
+        102,
+        140,
+        30
+      ],
+      "w": 30,
+      "h": 30,
+      "angle": 0
+    },
+    {
+      "name": "A22",
+      "coords": [
+        92,
+        182,
+        7
+      ],
+      "w": 7,
+      "h": 7,
+      "angle": 0
+    },
+    {
+      "name": "A31",
+      "coords": [
+        49,
+        132,
+        7
+      ],
+      "w": 7,
+      "h": 7,
+      "angle": 0
+    },
+    {
+      "name": "A6",
+      "coords": [
+        152,
+        142,
+        7
+      ],
+      "w": 7,
+      "h": 7,
+      "angle": 0
+    },
+    {
+      "name": "B10",
+      "coords": [
+        159,
+        40,
+        5
+      ],
+      "w": 5,
+      "h": 5,
+      "angle": 0
+    }
+  ]
+}

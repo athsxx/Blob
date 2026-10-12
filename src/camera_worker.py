@@ -724,8 +724,8 @@ class CameraWorker:
             det = det_map.get(hole_id)
             light_seen = bool(det and (det.get("laser") or det.get("raw_detection")))
 
-            # Green wins when the laser is in the hole. Otherwise cyan is the
-            # insert and yellow is where the light should come out.
+            # Every saved hole stays visible in red. The current step overrides
+            # that: cyan is the insert, yellow is the light-out, green is the laser.
             if light_seen:
                 color = (0, 255, 0)
             elif is_input:
@@ -733,9 +733,9 @@ class CameraWorker:
             elif is_output:
                 color = (0, 255, 255)
             else:
-                color = (128, 128, 128)
+                color = (0, 0, 255)
 
-            thickness = 3 if (light_seen or is_input or is_output) else 1
+            thickness = 3 if (light_seen or is_input or is_output) else 2
 
             if w == h:
                 cv2.circle(display, (cx, cy), w, color, thickness)
