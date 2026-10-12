@@ -19,7 +19,7 @@ import time
 import sys
 from collections import defaultdict
 from datetime import datetime
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Set, Tuple
 
 # HSV detection settings for green laser
 GREEN_LASER_SETTINGS = {
@@ -197,6 +197,8 @@ class CameraWorker:
         self.cap = None
         self.rois = []
         self.target_hole_id = None  # Hole ID to highlight as next target
+        self.highlight_inputs: Set[str] = set()
+        self.highlight_outputs: Set[str] = set()
         self.is_connected = False
         self.reconnect_attempts = 0
         self._gave_up = False
@@ -238,8 +240,8 @@ class CameraWorker:
         
         # Display frame size (send compressed frames to reduce IPC overhead)
         self.display_size = (
-            int(self.capture_settings.get("display_width", 480)),
-            int(self.capture_settings.get("display_height", 360)),
+            int(self.capture_settings.get("display_width", 640)),
+            int(self.capture_settings.get("display_height", 400)),
         )
         self.last_detections = []  # Store last detections for display overlay
         
@@ -717,43 +719,37 @@ class CameraWorker:
             hole_id = roi['hole_id']
             cx, cy, w, h, angle = self._scaled_roi(roi)
             
-            is_target = (self.target_hole_id == hole_id)
-            
-            # Determine status/color
+            is_input = hole_id in self.highlight_inputs or self.target_hole_id == hole_id
+            is_output = hole_id in self.highlight_outputs
             det = det_map.get(hole_id)
-            if det:
-                if det['laser']:
-                    color = (0, 255, 0)  # Green - stable detection
-                elif det['raw_detection']:
-                    color = (0, 255, 255)  # Yellow - detected but unstable
-                elif is_target:
-                    color = (0, 255, 255)  # Yellow - active target
-                else:
-                    color = (0, 0, 255)  # Red - processed but no laser
+            light_seen = bool(det and (det.get("laser") or det.get("raw_detection")))
+
+            # Green wins when the laser is in the hole. Otherwise cyan is the
+            # insert and yellow is where the light should come out.
+            if light_seen:
+                color = (0, 255, 0)
+            elif is_input:
+                color = (255, 255, 0)
+            elif is_output:
+                color = (0, 255, 255)
             else:
-                if is_target:
-                    color = (0, 255, 255)  # Yellow - active target
-                else:
-                    color = (128, 128, 128)  # Gray - no detection info yet
-            
-            thickness = 2
-            
-            # Target hole: draw prominent indicator
-            if is_target:
-                thickness = 3
-                # Outer pulsing ring (larger)
-                pulse_r = int(max(w, h) * 1.4)
-                cv2.circle(display, (cx, cy), pulse_r, (0, 255, 255), 1)
-            
-            # Draw shape
+                color = (128, 128, 128)
+
+            thickness = 3 if (light_seen or is_input or is_output) else 1
+
             if w == h:
                 cv2.circle(display, (cx, cy), w, color, thickness)
             else:
                 cv2.ellipse(display, (cx, cy), (w, h), angle, 0, 360, color, thickness)
-            
-            # Draw label
-            label = f"{hole_id}"
-            if det and det['laser']:
+
+            if is_input:
+                prefix = "IN "
+            elif is_output:
+                prefix = "OUT "
+            else:
+                prefix = ""
+            label = f"{prefix}{hole_id}"
+            if det and det.get("laser"):
                 label += " OK"
             cv2.putText(display, label, (cx - 20, cy - max(w, h) - 5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
@@ -763,11 +759,15 @@ class CameraWorker:
         cv2.putText(display, info, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         # Draw target indicator banner if this camera has the active target
-        if self.target_hole_id:
-            target_text = f"TARGET: {self.target_hole_id}"
-            h_frame = display.shape[0]
-            cv2.putText(display, target_text, (10, h_frame - 15),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        h_frame = display.shape[0]
+        if self.highlight_inputs or self.target_hole_id:
+            shown = ", ".join(sorted(self.highlight_inputs)) or str(self.target_hole_id)
+            cv2.putText(display, f"INSERT: {shown}", (10, h_frame - 15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        elif self.highlight_outputs:
+            shown = ", ".join(sorted(self.highlight_outputs))
+            cv2.putText(display, f"LOOK: {shown}", (10, h_frame - 15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         
         return display
     
@@ -1003,6 +1003,18 @@ class CameraWorker:
         if action == "set_target":
             self.target_hole_id = cmd.get("hole_id")
             self.trace.emit(f"command set_target hole={self.target_hole_id}")
+            return
+        if action == "set_highlights":
+            self.highlight_inputs = {
+                str(h) for h in (cmd.get("input_holes") or []) if str(h).strip()
+            }
+            self.highlight_outputs = {
+                str(h) for h in (cmd.get("output_holes") or []) if str(h).strip()
+            }
+            self.trace.emit(
+                f"command set_highlights in={sorted(self.highlight_inputs)} "
+                f"out={sorted(self.highlight_outputs)}"
+            )
             return
         if action == "snapshot":
             frame = self._last_good

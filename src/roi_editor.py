@@ -66,8 +66,8 @@ def grab_setup_snapshot(usb_index: int, config_dir: str, process_events=None):
     import cv2
 
     profile = load_capture_profile(config_dir)
-    width = int(profile.get("width") or 320)
-    height = int(profile.get("height") or 240)
+    width = int(profile.get("width") or 1280)
+    height = int(profile.get("height") or 800)
     fps = float(profile.get("fps") or 5)
     if sys.platform == "win32":
         backend = cv2.CAP_DSHOW

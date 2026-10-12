@@ -364,6 +364,9 @@ QFrame#cameraCell {
     border: 1px solid #d8d3c8;
     border-radius: 4px;
 }
+QFrame#cameraCell[stepRole="input"] { border: 3px solid #00a3c4; }
+QFrame#cameraCell[stepRole="output"] { border: 3px solid #e0b000; }
+QFrame#cameraCell[stepRole="both"] { border: 3px solid #00a3c4; }
 QFrame#cameraVideoShell, QFrame#heroCameraShell {
     background-color: #f3f1ea;
     border: 1px solid #d8d3c8;
@@ -512,7 +515,8 @@ class CameraWidget(QFrame):
         super().__init__(parent)
         self.face = face
         self.setObjectName("cameraCell")
-        self.setMinimumSize(160, 120)
+        self.setProperty("stepRole", "idle")
+        self.setMinimumSize(200, 125)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         layout = QVBoxLayout(self)
@@ -581,10 +585,26 @@ class CameraWidget(QFrame):
             self._fps_lbl.setText("—")
             self._fps_lbl.adjustSize()
 
-    def set_target_label(self, hole_id: Optional[str] = None):
+    def set_step_role(self, role: str) -> None:
+        """idle, input, output, or both. Changes the tile border only."""
+        self.setProperty("stepRole", role or "idle")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def set_target_label(self, hole_id: Optional[str] = None, role: str = "output"):
         """Show or hide the target hole indicator on this camera feed."""
         if hole_id:
             self._target_lbl.setText(f"→ {hole_id}")
+            if role == "input":
+                bg = "rgba(0,120,145,230)"
+            elif role == "both":
+                bg = "rgba(0,120,145,230)"
+            else:
+                bg = "rgba(138,90,18,220)"
+            self._target_lbl.setStyleSheet(
+                f"background-color: {bg}; color: #ffffff; "
+                "font-weight: 700; font-size: 11px; padding: 4px 8px; border-radius: 4px;"
+            )
             self._target_lbl.adjustSize()
             self._target_lbl.show()
             self._reposition_target_lbl()
@@ -1732,27 +1752,28 @@ class DashboardWindow(QMainWindow):
         self.instruction_panel.setFixedWidth(320)
         body_layout.addWidget(self.instruction_panel)
 
-        # RIGHT — Dynamic Camera Area (Hero + Thumbnails)
+        # RIGHT — six equal camera tiles. Size is preview only.
         right_panel = QWidget()
         right_panel.setStyleSheet("background: transparent;")
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(8)
 
-        # 1. Hero Section (Top, larger)
-        self.hero_frame = QFrame()
-        self.hero_frame.setObjectName("heroCameraShell")
-        self.hero_layout = QVBoxLayout(self.hero_frame)
-        self.hero_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.addWidget(self.hero_frame, stretch=6) # 60% height
+        legend = QLabel("Cyan = insert hole    Yellow = where light should appear    Green = light seen")
+        legend.setObjectName("pageMeta")
+        legend.setWordWrap(True)
+        right_layout.addWidget(legend)
 
-        # 2. Thumbnails Section (Bottom, grid)
-        self.thumb_frame = QFrame()
-        self.thumb_frame.setStyleSheet("background: transparent;")
-        self.thumb_layout = QGridLayout(self.thumb_frame)
-        self.thumb_layout.setContentsMargins(0, 0, 0, 0)
-        self.thumb_layout.setSpacing(8)
-        right_layout.addWidget(self.thumb_frame, stretch=4) # 40% height
+        self.camera_grid_frame = QFrame()
+        self.camera_grid_frame.setStyleSheet("background: transparent;")
+        self.camera_grid = QGridLayout(self.camera_grid_frame)
+        self.camera_grid.setContentsMargins(0, 0, 0, 0)
+        self.camera_grid.setSpacing(8)
+        for col in range(3):
+            self.camera_grid.setColumnStretch(col, 1)
+        for row in range(2):
+            self.camera_grid.setRowStretch(row, 1)
+        right_layout.addWidget(self.camera_grid_frame, stretch=1)
 
         body_layout.addWidget(right_panel, stretch=1)
         root.addWidget(body, stretch=1)
@@ -1764,10 +1785,9 @@ class DashboardWindow(QMainWindow):
             cw = CameraWidget(face, usb_index=self._face_to_index.get(face))
             self.camera_widgets[f"CAM_{face}"] = cw
         
-        # Initialize Layout (Hero = first enabled face)
         self._current_hero = None
-        enabled = self.enabled_faces()
-        self.set_hero_camera(enabled[0] if enabled else "A")
+        self._laid_out_faces = None
+        self._layout_cameras()
 
         # ── Footer: progress bar ──
         footer = QFrame()
@@ -2294,52 +2314,28 @@ class DashboardWindow(QMainWindow):
         return enabled
 
     def set_hero_camera(self, face_id: str):
-        """
-        Promotes the given face_id camera to the Hero slot.
-        Demotes the previous hero to the thumbnail grid.
-        Disabled / unassigned faces are hidden.
-        """
-        visible = self.enabled_faces()
-        if face_id not in visible:
-            face_id = visible[0] if visible else "A"
+        """Kept so older calls still run. Tiles stay equal; nothing is enlarged."""
+        self._layout_cameras()
+        self._current_hero = face_id
 
-        target_cam = self.camera_widgets.get(f"CAM_{face_id}")
-        if not target_cam:
+    def _layout_cameras(self) -> None:
+        """Place Faces A–F in a 3×2 grid. Every tile gets the same cell."""
+        faces = ["A", "B", "C", "D", "E", "F"]
+        signature = tuple(faces)
+        if signature == self._laid_out_faces:
             return
-
-        if self._current_hero:
-            prev_cam = self.camera_widgets.get(f"CAM_{self._current_hero}")
-            if prev_cam:
-                self.hero_layout.removeWidget(prev_cam)
-                prev_cam.setParent(None)
-
-        while self.hero_layout.count():
-            item = self.hero_layout.takeAt(0)
+        while self.camera_grid.count():
+            item = self.camera_grid.takeAt(0)
             if item.widget():
                 item.widget().setParent(None)
-
-        while self.thumb_layout.count():
-            item = self.thumb_layout.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
-
-        all_faces = ["A", "B", "C", "D", "E", "F"]
-        thumb_faces = [f for f in visible if f != face_id]
-        thumb_faces += [f for f in all_faces if f not in visible]
-
-        thumb_idx = 0
-        for f in thumb_faces:
-            cw = self.camera_widgets.get(f"CAM_{f}")
+        for index, face in enumerate(faces):
+            cw = self.camera_widgets.get(f"CAM_{face}")
             if not cw:
                 continue
-            row, col = divmod(thumb_idx, 3)
-            self.thumb_layout.addWidget(cw, row, col)
+            row, col = divmod(index, 3)
+            self.camera_grid.addWidget(cw, row, col)
             cw.setVisible(True)
-            thumb_idx += 1
-
-        self.hero_layout.addWidget(target_cam)
-        target_cam.setVisible(True)
-        self._current_hero = face_id
+        self._laid_out_faces = signature
 
     def update_guided_step(self, step_index: int):
         if not self._guided_sequence:
@@ -2360,12 +2356,12 @@ class DashboardWindow(QMainWindow):
                 face for face in parse_face_to_faces(str(input_face or ""))
                 if face in visible
             ]
-            if input_cameras:
-                self.set_hero_camera(input_cameras[0])
-
+            inputs_by_face: Dict[str, List[str]] = {}
+            outputs_by_face: Dict[str, List[str]] = {}
             labels: Dict[str, List[str]] = {}
             if input_hole:
                 for face in input_cameras:
+                    inputs_by_face.setdefault(face, []).append(input_hole)
                     labels.setdefault(face, []).append(f"INSERT → {input_hole}")
             for out in expected_outputs:
                 out_hole = out.get('hole_id', '')
@@ -2373,14 +2369,36 @@ class DashboardWindow(QMainWindow):
                     continue
                 for face in parse_face_to_faces(str(out.get('face', ''))):
                     if face in visible:
+                        outputs_by_face.setdefault(face, []).append(out_hole)
                         labels.setdefault(face, []).append(f"EXPECT → {out_hole}")
 
-            for cw in self.camera_widgets.values():
+            for face, cw in ((f, self.camera_widgets.get(f"CAM_{f}")) for f in "ABCDEF"):
+                if not cw:
+                    continue
+                has_in = face in inputs_by_face
+                has_out = face in outputs_by_face
+                if has_in and has_out:
+                    role = "both"
+                elif has_in:
+                    role = "input"
+                elif has_out:
+                    role = "output"
+                else:
+                    role = "idle"
+                cw.set_step_role(role)
                 cw.set_target_label(None)
             for face, parts in labels.items():
                 cw = self.camera_widgets.get(f"CAM_{face}")
-                if cw:
-                    cw.set_target_label(" | ".join(parts))
+                if not cw:
+                    continue
+                if face in inputs_by_face and face in outputs_by_face:
+                    role = "both"
+                elif face in inputs_by_face:
+                    role = "input"
+                else:
+                    role = "output"
+                cw.set_target_label(" | ".join(parts), role=role)
+            self._tell_workers_highlights(inputs_by_face, outputs_by_face)
 
     def update_step_result(self, step_index: int, passed: bool):
         if step_index < 0 or not self._guided_sequence or step_index >= len(self._guided_sequence):
@@ -2450,7 +2468,33 @@ class DashboardWindow(QMainWindow):
         self.header_status.setText("Running")
         self.header_status.setStyleSheet(_status_pill_qss("running"))
 
+    def _tell_workers_highlights(
+        self,
+        inputs_by_face: Dict[str, List[str]],
+        outputs_by_face: Dict[str, List[str]],
+    ) -> None:
+        """Paint request only. Does not open a camera or change capture size."""
+        for face in "ABCDEF":
+            q = self._comm_queues.get(face)
+            if q is None:
+                continue
+            try:
+                q.put_nowait({
+                    "action": "set_highlights",
+                    "input_holes": list(inputs_by_face.get(face) or []),
+                    "output_holes": list(outputs_by_face.get(face) or []),
+                })
+            except Exception:
+                pass
+
+    def _clear_hole_highlights(self) -> None:
+        for cw in self.camera_widgets.values():
+            cw.set_step_role("idle")
+            cw.set_target_label(None)
+        self._tell_workers_highlights({}, {})
+
     def _on_stop(self):
+        self._clear_hole_highlights()
         self.sig_stop.emit()
         self.btn_start.setEnabled(self._cameras_ready)
         self.btn_stop.setEnabled(False)

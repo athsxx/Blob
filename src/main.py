@@ -398,10 +398,6 @@ def main():
             presets = [
                 {"width": width, "height": height, "fps": capture_fps, "fourcc": fourcc},
             ]
-            if width < 640:
-                presets.append(
-                    {"width": 640, "height": 480, "fps": capture_fps, "fourcc": fourcc}
-                )
         else:
             capture_fps = float(cam.get("fps", 15) or 15)
             presets = [
@@ -429,6 +425,8 @@ def main():
             "min_width": 0,
             "target_fps": capture_fps,
             "display_fps": capture_fps,
+            "display_width": 640,
+            "display_height": 400,
             "roi_calib_width": 640,
             "roi_calib_height": 480,
             "reject_high_res": False,

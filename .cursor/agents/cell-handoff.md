@@ -7,7 +7,7 @@ You are continuing the Godrej DALIA manifold inspection app (repo Blob, branch `
 
 ## What is true now
 
-- Capture is frozen: DirectShow, MJPG, 320×240, software-paced 5 fps, sequential handshake, hub round-robin (USB parents `7` vs `8`), grab-drain (never sleep between DirectShow reads), last-good hold ≤1.5s. Do not raise FPS. Do not open a second VideoCapture while workers are alive.
+- Capture is frozen: DirectShow, MJPG, 1280×800, software-paced 5 fps, sequential handshake, hub round-robin (USB parents `7` vs `8`), grab-drain (never sleep between DirectShow reads), last-good hold ≤1.5s. Do not raise FPS. Do not open a second VideoCapture while workers are alive. 320×240 cropped the mounted view; do not put that size back.
 - Face A always writes `hole_positions_cam0.json` … Face F `cam5.json`. Not the USB index.
 - There is **no Admin and no PIN** in the UI. `capture_profile.json` still has an unused `admin_pin` field (`2468`). Do not build a PIN screen again.
 - Camera setup is **after manifold selection**, cameras still closed, **once**. Skip when `config/camera_port_map.json` exists and `config/last_session.json` has `"setup_complete": true`.
@@ -45,8 +45,8 @@ Existing data: `config/DALIA/connectivity_rules.json` is generated from the work
 
 ## History that must not be redone
 
-- Six cameras display on Windows after MJPG 320×240 @ 5 fps, no YUY2, 90s handshake, hub interleave. USB5 ignored FPS until software pace. Sleep-between-reads froze tiles. Face A reconnect can come back YUY2; do not “fix” that by raising resolution.
-- Assign-faces scan and hole-ROI freeze open one camera at the capture-lock size (MJPG 320×240 @ 5 fps), then release. Empty USB indexes are skipped. A bad ellipse or a failed click must not close the app.
+- Six cameras display on Windows after MJPG 1280×800 @ 5 fps, no YUY2, 90s handshake, hub interleave. USB5 ignored FPS until software pace. Sleep-between-reads froze tiles. Face A reconnect can come back YUY2; do not “fix” that by changing format or FPS.
+- Assign-faces scan and hole-ROI freeze open one camera at the capture-lock size (MJPG 1280×800 @ 5 fps), then release. Empty USB indexes are skipped. A bad ellipse or a failed click must not close the app.
 - Admin was tried on the live bar, then on the start screen. Both are discarded. The owner could not calibrate while cameras were held, and did not want a PIN.
 - First-launch assign wizard **before** mode was removed. Assign happens after the manifold.
 - A sibling agent added Excel/type-in hole connections. Keep it. Do not drop `connectivity_rules_io.py` or `rule_editor_ui.py`.
@@ -62,4 +62,4 @@ Existing data: `config/DALIA/connectivity_rules.json` is generated from the work
 - `src/roi_editor.py` — `grab_setup_snapshot` + `RoiEditorDialog(setup_mode=True)`.
 - `src/main.py` — does not open the face wizard before the start screen. Resolves USB indices after Continue when the port map exists.
 - `src/camera_worker.py` — frozen capture. `snapshot` / `reload_rois` exist; setup ROI does not need them.
-- `config/capture_profile.json` — 320×240, 5 fps, MJPG. No UI editor anymore.
+- `config/capture_profile.json` — 1280×800, 5 fps, MJPG. No UI editor anymore.

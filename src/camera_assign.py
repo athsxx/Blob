@@ -51,8 +51,8 @@ def capture_backend() -> int:
 def scan_cameras(
     max_index: int = MAX_INDEX,
     progress: Optional[Callable[[str], None]] = None,
-    width: int = 320,
-    height: int = 240,
+    width: int = 1280,
+    height: int = 800,
     fps: float = 5,
 ) -> List[Dict[str, Any]]:
     """
@@ -60,7 +60,7 @@ def scan_cameras(
 
     Returns list of dicts: {index, frame, width, height}.
     Only one device is held open at a time (required on shared USB hubs).
-    Size defaults match the live capture lock (MJPG 320×240 @ 5 fps).
+    Size defaults match the live capture lock (MJPG 1280×800 @ 5 fps).
     Empty indices are skipped. OpenCV's DirectShow warning for those slots is silenced.
     """
     backend = capture_backend()

@@ -48,8 +48,8 @@ class _FaceAssignScanThread(QThread):
             found = scan_cameras(
                 max_index=self._max_index,
                 progress=lambda msg: self.progress.emit(msg),
-                width=int(profile.get("width") or 320),
-                height=int(profile.get("height") or 240),
+                width=int(profile.get("width") or 1280),
+                height=int(profile.get("height") or 800),
                 fps=float(profile.get("fps") or 5),
             )
             attach_port_paths(found)

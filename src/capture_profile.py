@@ -1,7 +1,7 @@
 """Locked capture settings used by every Windows camera worker.
 
 Operators do not change these from the inspection screens.
-The file is config/capture_profile.json (default 320×240 MJPG at 5 fps).
+The file is config/capture_profile.json (1280×800 MJPG at 5 fps).
 Workers read it when they start.
 """
 
@@ -17,8 +17,8 @@ DEFAULT_PIN = "2468"
 
 DEFAULT_PROFILE: Dict[str, Any] = {
     "admin_pin": DEFAULT_PIN,
-    "width": 320,
-    "height": 240,
+    "width": 1280,
+    "height": 800,
     "fps": 5,
     "fourcc": "MJPG",
     "backend": "dshow",
@@ -40,16 +40,16 @@ def load_capture_profile(config_dir: str) -> Dict[str, Any]:
                 data.update(loaded)
         except (OSError, json.JSONDecodeError):
             pass
-    data["width"] = int(data.get("width") or 320)
-    data["height"] = int(data.get("height") or 240)
+    data["width"] = int(data.get("width") or 1280)
+    data["height"] = int(data.get("height") or 800)
     data["fps"] = float(data.get("fps") or 5)
     data["fourcc"] = str(data.get("fourcc") or "MJPG").upper()
     data["backend"] = str(data.get("backend") or "dshow").lower()
     data["admin_pin"] = str(data.get("admin_pin") or DEFAULT_PIN)
     if data["width"] <= 0:
-        data["width"] = 320
+        data["width"] = 1280
     if data["height"] <= 0:
-        data["height"] = 240
+        data["height"] = 800
     if data["fps"] < 1:
         data["fps"] = 5
     if data["fps"] > 10:

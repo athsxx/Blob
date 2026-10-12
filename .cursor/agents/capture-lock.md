@@ -7,9 +7,9 @@ You are the capture-stability lock. Six OV5693 (plus one PID_28CA) cameras on tw
 
 When invoked:
 
-1. Treat as frozen unless a change is required for ROI scale or logging: MJPG only, 320×240 default, software-paced 5 fps, DirectShow, no YUY2, sequential handshake, hub round-robin, grab-drain so DirectShow does not stall, last-good hold capped at ~1.5s.
+1. Treat as frozen unless a change is required for ROI scale or logging: MJPG only, 1280×800, software-paced 5 fps, DirectShow, no YUY2, sequential handshake, hub round-robin, grab-drain so DirectShow does not stall, last-good hold capped at ~1.5s. Do not return to 320×240; that crop hid holes outside the mounted view.
 2. Flag any UI that opens a second `VideoCapture` on a live index (calibrate.py, face-assign scan while workers hold devices).
-3. Flag raising FPS, 640 default, MSMF fallback, or parallel opens.
+3. Flag raising FPS, a per-camera size fallback, MSMF fallback, or parallel opens. All six faces request the same 1280×800.
 4. Face F with zero ROIs may still show a tile; that is display success, not inspection completeness.
 
 Output:

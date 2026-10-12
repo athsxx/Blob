@@ -9,7 +9,7 @@ When invoked:
 
 1. Follow one guided step: input face/hole → worker mask → HSV → stable window → rule outputs.
 2. Check empty ROI files (especially Face F / hole_positions_cam5.json).
-3. Check 320×240 capture vs 640×480 calibration scale on both masks and overlays.
+3. Check 1280×800 capture against each file's calib_width and calib_height on both masks and overlays.
 4. Check min_stable_frames vs target_fps vs 2s window (enough samples?).
 5. Check guided sequence skipping when a face has no camera or no ROIs.
 6. Do not recommend raising FPS if USB stability would regress.
