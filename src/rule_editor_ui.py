@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Set
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -38,6 +39,41 @@ from connectivity_rules_io import (
 )
 
 FACE_LETTERS = list("ABCDEF")
+
+
+def _face_bits(face: str) -> str:
+    text = str(face or "?").replace("_OR_", "/").replace("_", "/")
+    return text or "?"
+
+
+def _connection_tree(rows: List[ConnectionRow]) -> str:
+    """Group several light-out rows under the one hole the laser goes into."""
+    order: List[tuple] = []
+    grouped: Dict[tuple, List[tuple]] = {}
+    for row in rows:
+        key = (str(row.input_face or "").strip(), str(row.input_hole or "").strip())
+        if not key[0] and not key[1]:
+            continue
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append((str(row.output_face or "").strip(), str(row.output_hole or "").strip()))
+    if not order:
+        return "Add a row. One insert hole can have several light-out holes."
+    blocks: List[str] = []
+    for key in order:
+        face, hole = key
+        blocks.append(
+            f"<div style='color:#0077a8;font-weight:700'>INSERT&nbsp;&nbsp;{_face_bits(face)} · {hole or '?'}</div>"
+        )
+        outs = grouped[key]
+        for index, (out_face, out_hole) in enumerate(outs):
+            branch = "└" if index == len(outs) - 1 else "├"
+            blocks.append(
+                "<div style='color:#8a5a12;font-weight:600'>"
+                f"&nbsp;&nbsp;{branch}─&nbsp;{_face_bits(out_face)} · {out_hole or '?'}</div>"
+            )
+    return "".join(blocks)
 
 
 class _DryRunDialog(QDialog):
@@ -155,6 +191,12 @@ class RuleEditorDialog(QDialog):
         btn_row.addWidget(load_btn)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
+
+        self.tree = QLabel("Add a row to see where each hole sends the light.")
+        self.tree.setWordWrap(True)
+        self.tree.setTextFormat(Qt.TextFormat.RichText)
+        self.tree.setObjectName("pageHint")
+        layout.addWidget(self.tree)
 
         self.preview = QLabel()
         self.preview.setWordWrap(True)
@@ -305,6 +347,7 @@ class RuleEditorDialog(QDialog):
             f"Guided steps: {steps}  (from {len(rules)} connections, {n_rows} rows)."
             f"{extra}"
         )
+        self.tree.setText(_connection_tree(self._rows_from_table()))
 
     def _replace_table(self, rows: List[ConnectionRow]) -> None:
         self.table.setRowCount(0)

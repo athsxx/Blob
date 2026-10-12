@@ -221,6 +221,7 @@ class CameraWorker:
         self.display_interval = 1.0 / self.display_fps if self.display_fps > 0 else 0
         self.last_display_time = 0
         self._roi_scale = (1.0, 1.0)
+        self._roi_origin = (0.0, 0.0)
         self._roi_calib = (
             int(self.capture_settings.get("roi_calib_width", 640)),
             int(self.capture_settings.get("roi_calib_height", 480)),
@@ -312,24 +313,38 @@ class CameraWorker:
             self.trace.emit(f"Error loading config: {e}")
             return False
 
+    def _sync_roi_scale(self, frame_w: int, frame_h: int) -> None:
+        """Map saved pixels onto the live frame with one scale, no stretch.
+
+        A freeze saved at the live size stays 1:1. A different size is fitted
+        and centered, so a ring does not slide off the hole it was drawn on.
+        """
+        calib_w, calib_h = self._roi_calib
+        if not calib_w or not calib_h or (calib_w == frame_w and calib_h == frame_h):
+            self._roi_scale = (1.0, 1.0)
+            self._roi_origin = (0.0, 0.0)
+            return
+        scale = min(frame_w / float(calib_w), frame_h / float(calib_h))
+        used_w = calib_w * scale
+        used_h = calib_h * scale
+        self._roi_scale = (scale, scale)
+        self._roi_origin = ((frame_w - used_w) / 2.0, (frame_h - used_h) / 2.0)
+
     def _scaled_roi(self, roi: Dict[str, Any]) -> Tuple[int, int, int, int, float]:
         sx, sy = self._roi_scale
-        cx = int(round(roi["cx"] * sx))
-        cy = int(round(roi["cy"] * sy))
+        ox, oy = self._roi_origin
+        cx = int(round(roi["cx"] * sx + ox))
+        cy = int(round(roi["cy"] * sy + oy))
         w = max(1, int(round(roi.get("w", roi.get("radius", 20)) * sx)))
         h = max(1, int(round(roi.get("h", roi.get("radius", 20)) * sy)))
         return cx, cy, w, h, float(roi.get("angle", 0))
 
     def _build_roi_masks(self, frame_h: int, frame_w: int):
-        """Pre-compute ROI masks once when frame size is known. Scale from 640×480 calibration."""
+        """Pre-compute ROI masks once when frame size is known."""
         self.roi_masks = {}
         self.roi_mask_bools = {}
         self._frame_size = (frame_h, frame_w)
-        calib_w, calib_h = self._roi_calib
-        self._roi_scale = (
-            frame_w / float(calib_w or frame_w),
-            frame_h / float(calib_h or frame_h),
-        )
+        self._sync_roi_scale(frame_w, frame_h)
 
         for roi in self.rois:
             hole_id = roi['hole_id']
@@ -961,8 +976,14 @@ class CameraWorker:
                         self._build_roi_masks(fh, fw)
                     display_frame = self.draw_overlays(frame, self.last_detections)
                     dw, dh = self.display_size
-                    if display_frame.shape[1] > dw or display_frame.shape[0] > dh:
-                        small = cv2.resize(display_frame, (dw, dh))
+                    fh, fw = display_frame.shape[:2]
+                    fit = min(dw / float(fw), dh / float(fh), 1.0) if fw and fh else 1.0
+                    if fit < 0.999:
+                        small = cv2.resize(
+                            display_frame,
+                            (max(1, int(round(fw * fit))), max(1, int(round(fh * fit)))),
+                            interpolation=cv2.INTER_AREA,
+                        )
                     else:
                         small = display_frame
                     self.display_queue.put_nowait((f"CAM_{self.face}", small))

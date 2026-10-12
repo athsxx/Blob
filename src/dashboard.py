@@ -43,6 +43,25 @@ def _face_label(face: str) -> str:
     """Show a compound face as C/F. Stored rules keep C_F."""
     letters = parse_face_to_faces(str(face or ""))
     return "/".join(letters) if letters else str(face or "?")
+
+
+def _step_tree(face: str, hole: str, outs: List[Dict]) -> str:
+    """One insert hole, then each place the light should appear."""
+    lines = [
+        f"<div style='color:#0077a8;font-weight:700;font-size:14px'>"
+        f"INSERT&nbsp;&nbsp;{_face_label(face)} · {hole}</div>"
+    ]
+    count = len(outs)
+    for index, out in enumerate(outs):
+        branch = "└" if index == count - 1 else "├"
+        lines.append(
+            "<div style='color:#8a5a12;font-size:13px;font-weight:600'>"
+            f"&nbsp;&nbsp;{branch}─&nbsp;{_face_label(out.get('face', '?'))}"
+            f" · {out.get('hole_id', '?')}</div>"
+        )
+    if not outs:
+        lines.append("<div style='color:#8a8580;font-size:13px'>&nbsp;&nbsp;└─ no light-out hole</div>")
+    return "".join(lines)
 from config_loader import (
     manifold_labels,
     manifold_folder_for_label,
@@ -813,6 +832,11 @@ class InstructionPanel(QFrame):
         self._out_layout.setSpacing(4)
         self._out_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._out_widget)
+        self.tree_lbl = QLabel("")
+        self.tree_lbl.setWordWrap(True)
+        self.tree_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self.tree_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._out_layout.addWidget(self.tree_lbl)
 
         layout.addStretch()
 
@@ -910,15 +934,7 @@ class InstructionPanel(QFrame):
             self._out_layout.removeWidget(lbl)
             lbl.deleteLater()
         self._out_labels.clear()
-
-        for out in outs:
-            lbl = QLabel(
-                f"● {_face_label(out.get('face', '?'))}  →  {out.get('hole_id', '?')}"
-            )
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("color: #0f1216; font-size: 13px;")
-            self._out_layout.addWidget(lbl)
-            self._out_labels.append(lbl)
+        self.tree_lbl.setText(_step_tree(face, hole, outs))
 
         self.set_waiting()
 
@@ -1965,7 +1981,9 @@ class DashboardWindow(QMainWindow):
         self.stacked_widget.setCurrentIndex(self._prep_back_target)
 
     def bind_worker_ipc(self, comm_queues: Dict[str, Any], snapshot_queue) -> None:
-        self._comm_queues = comm_queues or {}
+        self._comm_queues = {
+            str(face).upper(): queue for face, queue in (comm_queues or {}).items()
+        }
         self._snapshot_queue = snapshot_queue
 
     def unbind_worker_ipc(self) -> None:
@@ -2015,6 +2033,8 @@ class DashboardWindow(QMainWindow):
         if self._busy_overlay is not None:
             self._busy_overlay.clear()
         self._lock_live_bar(False)
+        if self._guided_sequence:
+            self.update_guided_step(self._current_step_index or 0)
         failed = ", ".join(self._failed_faces)
         if failed:
             QMessageBox.warning(
@@ -2203,8 +2223,7 @@ class DashboardWindow(QMainWindow):
         self.progress_bar.setFormat(f"%v / {denom} steps")
         if sequence:
             self._current_step_index = 0
-            self.step_list.set_active(0)
-            self.instruction_panel.show_step(sequence[0], total)
+            self.update_guided_step(0)
         else:
             self._current_step_index = 0
             self.instruction_panel.status_lbl.setText("No guided steps")
@@ -2475,7 +2494,7 @@ class DashboardWindow(QMainWindow):
     ) -> None:
         """Paint request only. Does not open a camera or change capture size."""
         for face in "ABCDEF":
-            q = self._comm_queues.get(face)
+            q = self._comm_queues.get(str(face).upper())
             if q is None:
                 continue
             try:

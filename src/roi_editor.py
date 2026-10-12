@@ -214,28 +214,33 @@ class RoiCanvas(QWidget):
         self.cursor_xy = (self._img_w / 2.0, self._img_h / 2.0)
         self.update()
 
-    def _integer_scale(self) -> int:
-        wr, hr = self.width(), self.height()
-        sx = wr // max(self._img_w, 1)
-        sy = hr // max(self._img_h, 1)
-        return max(1, min(sx, sy, MAX_INTEGER_SCALE))
+    def _fit_scale(self) -> float:
+        """Fit the whole freeze in the widget. Same full picture the live tile shows."""
+        wr = max(self.width(), 1)
+        hr = max(self.height(), 1)
+        sx = wr / float(max(self._img_w, 1))
+        sy = hr / float(max(self._img_h, 1))
+        return min(sx, sy)
 
     def _dest_rect(self) -> QRect:
         if self._image is None:
             return QRect()
-        scale = self._integer_scale()
-        dw, dh = self._img_w * scale, self._img_h * scale
+        scale = self._fit_scale()
+        dw = max(1, int(round(self._img_w * scale)))
+        dh = max(1, int(round(self._img_h * scale)))
         return QRect((self.width() - dw) // 2, (self.height() - dh) // 2, dw, dh)
 
     def _to_image(self, pos: QPoint) -> Optional[Tuple[float, float]]:
         rect = self._dest_rect()
-        scale = self._integer_scale()
+        scale = self._fit_scale()
         if rect.width() <= 0 or rect.height() <= 0 or scale <= 0:
             return None
         if not rect.contains(pos):
             return None
         x = (pos.x() - rect.x()) / float(scale)
         y = (pos.y() - rect.y()) / float(scale)
+        if x < 0 or y < 0 or x >= self._img_w or y >= self._img_h:
+            return None
         return x, y
 
     def selected_ellipse(self) -> Optional[Dict[str, Any]]:
@@ -254,7 +259,7 @@ class RoiCanvas(QWidget):
                 p.setPen(INK)
                 p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Waiting for snapshot")
                 return
-            scale = float(self._integer_scale())
+            scale = float(self._fit_scale())
 
             def map_pt(x, y) -> QPoint:
                 return QPoint(
