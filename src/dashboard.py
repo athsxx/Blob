@@ -1982,9 +1982,8 @@ class DashboardWindow(QMainWindow):
         self.stacked_widget.setCurrentIndex(self._prep_back_target)
 
     def bind_worker_ipc(self, comm_queues: Dict[str, Any], snapshot_queue) -> None:
-        self._comm_queues = {
-            str(face).upper(): queue for face, queue in (comm_queues or {}).items()
-        }
+        # Same dict main.py fills as each camera opens. A copy here would stay empty.
+        self._comm_queues = comm_queues if comm_queues is not None else {}
         self._snapshot_queue = snapshot_queue
 
     def unbind_worker_ipc(self) -> None:
@@ -2495,7 +2494,7 @@ class DashboardWindow(QMainWindow):
     ) -> None:
         """Paint request only. Does not open a camera or change capture size."""
         for face in "ABCDEF":
-            q = self._comm_queues.get(str(face).upper())
+            q = self._queue_for_face(face)
             if q is None:
                 continue
             try:
@@ -2506,6 +2505,16 @@ class DashboardWindow(QMainWindow):
                 })
             except Exception:
                 pass
+
+    def _queue_for_face(self, face: str):
+        queues = self._comm_queues or {}
+        key = str(face).upper()
+        if key in queues:
+            return queues[key]
+        for name, queue in queues.items():
+            if str(name).upper() == key:
+                return queue
+        return None
 
     def _clear_hole_highlights(self) -> None:
         for cw in self.camera_widgets.values():

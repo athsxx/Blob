@@ -21,6 +21,11 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Set, Tuple
 
+def _hole_key(value: Any) -> str:
+    """Match a rule hole to the ring name without caring about case or spaces."""
+    return str(value or "").strip().upper()
+
+
 # HSV detection settings for green laser
 GREEN_LASER_SETTINGS = {
     'hue_min': 35,
@@ -734,10 +739,14 @@ class CameraWorker:
             hole_id = roi['hole_id']
             cx, cy, w, h, angle = self._scaled_roi(roi)
             
-            is_input = hole_id in self.highlight_inputs or self.target_hole_id == hole_id
-            is_output = hole_id in self.highlight_outputs
+            hole_key = _hole_key(hole_id)
+            is_input = hole_key in self.highlight_inputs or (
+                self.target_hole_id and hole_key == _hole_key(self.target_hole_id)
+            )
+            is_output = hole_key in self.highlight_outputs
             det = det_map.get(hole_id)
-            light_seen = bool(det and (det.get("laser") or det.get("raw_detection")))
+            # Stable laser turns the ring green. A flicker must not hide the step color.
+            light_seen = bool(det and det.get("laser"))
 
             # Every saved hole stays visible in red. The current step overrides
             # that: cyan is the insert, yellow is the light-out, green is the laser.
@@ -750,7 +759,7 @@ class CameraWorker:
             else:
                 color = (0, 0, 255)
 
-            thickness = 3 if (light_seen or is_input or is_output) else 2
+            thickness = 4 if (light_seen or is_input or is_output) else 2
 
             if w == h:
                 cv2.circle(display, (cx, cy), w, color, thickness)
@@ -1027,10 +1036,10 @@ class CameraWorker:
             return
         if action == "set_highlights":
             self.highlight_inputs = {
-                str(h) for h in (cmd.get("input_holes") or []) if str(h).strip()
+                _hole_key(h) for h in (cmd.get("input_holes") or []) if _hole_key(h)
             }
             self.highlight_outputs = {
-                str(h) for h in (cmd.get("output_holes") or []) if str(h).strip()
+                _hole_key(h) for h in (cmd.get("output_holes") or []) if _hole_key(h)
             }
             self.trace.emit(
                 f"command set_highlights in={sorted(self.highlight_inputs)} "
