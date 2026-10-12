@@ -46,21 +46,19 @@ def _face_label(face: str) -> str:
 
 
 def _step_tree(face: str, hole: str, outs: List[Dict]) -> str:
-    """One insert hole, then each place the light should appear."""
+    """One insert hole, then each place the light should appear, in order."""
     lines = [
         f"<div style='color:#0077a8;font-weight:700;font-size:14px'>"
-        f"INSERT&nbsp;&nbsp;{_face_label(face)} · {hole}</div>"
+        f"Laser goes into {_face_label(face)} · {hole}</div>"
     ]
-    count = len(outs)
-    for index, out in enumerate(outs):
-        branch = "└" if index == count - 1 else "├"
+    for index, out in enumerate(outs, start=1):
         lines.append(
             "<div style='color:#8a5a12;font-size:13px;font-weight:600'>"
-            f"&nbsp;&nbsp;{branch}─&nbsp;{_face_label(out.get('face', '?'))}"
+            f"Light {index}: {_face_label(out.get('face', '?'))}"
             f" · {out.get('hole_id', '?')}</div>"
         )
     if not outs:
-        lines.append("<div style='color:#8a8580;font-size:13px'>&nbsp;&nbsp;└─ no light-out hole</div>")
+        lines.append("<div style='color:#8a8580;font-size:13px'>No light-out hole</div>")
     return "".join(lines)
 from config_loader import (
     manifold_labels,
@@ -1292,8 +1290,8 @@ class PreInspectionSetupPage(QWidget):
             "Click to drop or move; +/- width; [ ] height; arrows rotate; a add; c copy; d delete; SPACE recapture. Save. "
             "Face A writes hole_positions_cam0.json, Face B cam1, and so on. "
             "You can continue with some faces empty and come back later.<br><br>"
-            "3. <b>Hole connections</b> — Save spreadsheet writes an Excel tree. "
-            "The blue row is the hole the laser goes into. Each gold row under it is one light-out hole. "
+            "3. <b>Hole connections</b> — Save spreadsheet writes one row per insert hole. "
+            "Light 1, Light 2, and Light 3 are the places the light should appear, on that same row. "
             "Edit the names in Excel, then Load spreadsheet. "
             "Saving replaces connectivity rules for this manifold and keeps a backup."
         )

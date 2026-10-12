@@ -64,16 +64,16 @@ def _connection_tree(rows: List[ConnectionRow]) -> str:
     blocks: List[str] = []
     for key in order:
         face, hole = key
-        blocks.append(
-            f"<div style='color:#0077a8;font-weight:700'>INSERT&nbsp;&nbsp;{_face_bits(face)} · {hole or '?'}</div>"
-        )
         outs = grouped[key]
-        for index, (out_face, out_hole) in enumerate(outs):
-            branch = "└" if index == len(outs) - 1 else "├"
-            blocks.append(
-                "<div style='color:#8a5a12;font-weight:600'>"
-                f"&nbsp;&nbsp;{branch}─&nbsp;{_face_bits(out_face)} · {out_hole or '?'}</div>"
-            )
+        bits = ", ".join(
+            f"Light {index}: {_face_bits(out_face)} · {out_hole or '?'}"
+            for index, (out_face, out_hole) in enumerate(outs, start=1)
+        )
+        blocks.append(
+            f"<div><span style='color:#0077a8;font-weight:700'>"
+            f"{_face_bits(face)} · {hole or '?'}</span>"
+            f" <span style='color:#8a5a12;font-weight:600'>→ {bits}</span></div>"
+        )
     return "".join(blocks)
 
 
@@ -153,8 +153,8 @@ class RuleEditorDialog(QDialog):
         title.setObjectName("pageTitleMain")
         layout.addWidget(title)
         hint = QLabel(
-            f"{manifold}  —  Save spreadsheet writes the hole tree in Excel. "
-            "The blue row is the hole the laser goes into. Each gold row under it is one light-out hole. "
+            f"{manifold}  —  Save spreadsheet writes one row per insert hole. "
+            "Light 1, Light 2, and Light 3 on that row are where the light should appear. "
             "Edit the names there, then Load spreadsheet. Names must match the rings on the face pictures."
         )
         hint.setWordWrap(True)
@@ -372,7 +372,7 @@ class RuleEditorDialog(QDialog):
                 "Add at least one insert hole and one light-out hole first.",
             )
             return
-        start = os.path.join(self._config_dir, self._folder, "hole_connections_tree.xlsx")
+        start = os.path.join(self._config_dir, self._folder, "hole_connections.xlsx")
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save spreadsheet",
@@ -391,10 +391,10 @@ class RuleEditorDialog(QDialog):
         QMessageBox.information(
             self,
             "Save spreadsheet",
-            "Saved the hole tree.\n\n"
-            "Blue row = laser goes into this hole.\n"
-            "Gold row under it = one hole where the light should appear.\n"
-            "Leave the insert cells blank on a gold row.",
+            "Saved the hole sheet.\n\n"
+            "Each row is one hole the laser goes into.\n"
+            "Light 1, Light 2, and Light 3 on that row are where the light should appear.\n"
+            "Leave a Light pair blank if you do not need it.",
         )
 
     def _load_spreadsheet(self) -> None:

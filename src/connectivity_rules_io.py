@@ -75,8 +75,12 @@ _HEADER_ALIASES = {
     "mandatory": {"mandatory", "required"},
 }
 
-_OUTPUT_N_FACE = re.compile(r"^output\s*([0-9]+)\s*face$")
-_OUTPUT_N_HOLE = re.compile(r"^output\s*([0-9]+)\s*hole$")
+_NUMBERED_FACE = re.compile(
+    r"^(?:output|light(?:-out)?|light out)\s*([0-9]+)\s*face$"
+)
+_NUMBERED_HOLE = re.compile(
+    r"^(?:output|light(?:-out)?|light out)\s*([0-9]+)\s*hole$"
+)
 
 
 @dataclass
@@ -653,16 +657,28 @@ def _map_headers(headers: Sequence[str]) -> Tuple[Dict[str, int], List[Tuple[int
         h = _norm_header(raw)
         if not h:
             continue
+        matched_alias = False
         for field_name, aliases in _HEADER_ALIASES.items():
             if h in aliases and field_name not in mapped:
                 mapped[field_name] = i
+                matched_alias = True
                 break
-        mface = _OUTPUT_N_FACE.match(h)
-        mhole = _OUTPUT_N_HOLE.match(h)
+        if matched_alias:
+            continue
+        mface = _NUMBERED_FACE.match(h)
+        mhole = _NUMBERED_HOLE.match(h)
         if mface:
-            extras.setdefault(int(mface.group(1)), {})["face"] = i
+            n = int(mface.group(1))
+            if n == 1 and "output_face" not in mapped:
+                mapped["output_face"] = i
+            else:
+                extras.setdefault(n, {})["face"] = i
         if mhole:
-            extras.setdefault(int(mhole.group(1)), {})["hole"] = i
+            n = int(mhole.group(1))
+            if n == 1 and "output_hole" not in mapped:
+                mapped["output_hole"] = i
+            else:
+                extras.setdefault(n, {})["hole"] = i
     extra_pairs = [
         (n, cols["face"], cols["hole"])
         for n, cols in sorted(extras.items())
@@ -708,7 +724,20 @@ def _rows_from_table(headers: Sequence[str], data_rows: Sequence[Sequence[Any]])
         raw_out_hole = _cell(row, mapped["output_hole"])
         mandatory = _truthy(_cell(row, mapped.get("mandatory"))) if "mandatory" in mapped else True
         logic = _logic(_cell(row, mapped.get("logic"))) if "logic" in mapped else DEFAULT_LOGIC
-        if not raw_face and not raw_hole and not raw_out_face and not raw_out_hole:
+        extra_exits: List[Tuple[str, str]] = []
+        for light_n, fcol, hcol in extras:
+            oface = _cell(row, fcol)
+            ohole = _cell(row, hcol)
+            if oface and ohole:
+                extra_exits.extend(pair_exit_holes_and_faces(
+                    split_cell_list(ohole),
+                    split_cell_list(oface),
+                ))
+            elif oface or ohole:
+                parsed.errors.append(
+                    f"Row {n}: Light {light_n} needs both a hole and a face"
+                )
+        if not raw_face and not raw_hole and not raw_out_face and not raw_out_hole and not extra_exits:
             continue
         inserts = split_cell_list(raw_hole)
         exits = pair_exit_holes_and_faces(
@@ -724,7 +753,7 @@ def _rows_from_table(headers: Sequence[str], data_rows: Sequence[Sequence[Any]])
             last_hole = inserts[0]
             if raw_face:
                 last_face = raw_face
-            if not exits:
+            if not exits and not extra_exits:
                 continue
         elif exits:
             if not last_hole:
@@ -740,14 +769,16 @@ def _rows_from_table(headers: Sequence[str], data_rows: Sequence[Sequence[Any]])
                 f"Row {n}: held ({raw_hole or 'blank insert'} → {raw_out_hole})"
             )
             continue
-        if is_unnamed_counter(inserts[0]) or any(is_unnamed_counter(hole) for hole, _face in exits):
+        if is_unnamed_counter(inserts[0]) or any(
+            is_unnamed_counter(hole) for hole, _face in list(exits) + extra_exits
+        ):
             parsed.errors.append(
                 f"Row {n}: held, unnamed counter ({inserts[0]})"
             )
             continue
         input_hole = inserts[0]
         input_face = raw_face
-        for hole, face in exits:
+        for hole, face in list(exits) + extra_exits:
             parsed.rows.append(ConnectionRow(
                 input_face=input_face,
                 input_hole=input_hole,
@@ -757,19 +788,6 @@ def _rows_from_table(headers: Sequence[str], data_rows: Sequence[Sequence[Any]])
                 logic=logic,
                 source_row=n,
             ))
-        for _n, fcol, hcol in extras:
-            oface = _cell(row, fcol)
-            ohole = _cell(row, hcol)
-            if oface and ohole:
-                parsed.rows.append(ConnectionRow(
-                    input_face=input_face,
-                    input_hole=input_hole,
-                    output_face=oface,
-                    output_hole=ohole,
-                    mandatory=mandatory,
-                    logic=logic,
-                    source_row=n,
-                ))
     return parsed
 
 
@@ -834,87 +852,123 @@ def parse_xlsx_file(path: str) -> SpreadsheetParse:
     return parsed
 
 
-def write_tree_workbook(path: str, rules: Sequence[Dict[str, Any]]) -> str:
-    """Excel the operator edits: one insert hole, then one row per light-out hole."""
+def _sheet_face(face: str) -> str:
+    text = str(face or "")
+    if "_OR_" in text:
+        return text.replace("_OR_", " or ")
+    return text.replace("_", "-")
+
+
+def write_connections_workbook(path: str, rules: Sequence[Dict[str, Any]]) -> str:
+    """One row per insert hole. Each light-out hole is the next pair of columns."""
     try:
         import openpyxl
-        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
     except ImportError as exc:
         raise RuntimeError(
             "openpyxl is not installed. pip install openpyxl"
         ) from exc
 
-    wb = openpyxl.Workbook()
-    sheet = wb.active
-    sheet.title = "Hole connections"
-    headers = ["Insert hole", "Insert face", "Light-out hole", "Light-out face"]
-    sheet.append(headers)
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="243028")
-    trunk_fill = PatternFill("solid", fgColor="D6F1F8")
-    branch_fill = PatternFill("solid", fgColor="F8E7A8")
-    for col in range(1, 5):
-        cell = sheet.cell(1, col)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(vertical="center")
-    sheet.row_dimensions[1].height = 22
-    sheet.auto_filter.ref = "A1:D1"
-    sheet.freeze_panes = "A2"
-    sheet.sheet_properties.outlinePr.summaryBelow = False
-
-    def _sheet_face(face: str) -> str:
-        text = str(face or "")
-        if "_OR_" in text:
-            return text.replace("_OR_", " or ")
-        return text.replace("_", "-")
-
-    row_i = 2
+    prepared: List[Tuple[Dict[str, str], List[Dict[str, Any]]]] = []
+    widest = 1
     for rule in uniquify_rule_ids(rules):
         canon = canonical_rule(rule)
         inp = canon["input"]
-        outputs = canon["expected_outputs"]
+        outputs = list(canon["expected_outputs"])
         if not inp.get("hole_id"):
             continue
-        sheet.append([inp["hole_id"], _sheet_face(inp["face"]), "", ""])
-        for col in range(1, 5):
-            sheet.cell(row_i, col).fill = trunk_fill
-            sheet.cell(row_i, col).font = Font(bold=True, color="0077A8")
-        row_i += 1
-        for out in outputs:
-            sheet.append(["", "", out.get("hole_id", ""), _sheet_face(out.get("face", ""))])
-            sheet.row_dimensions[row_i].outlineLevel = 1
-            for col in range(1, 5):
-                sheet.cell(row_i, col).fill = branch_fill
-                sheet.cell(row_i, col).font = Font(color="8A5A12")
-            row_i += 1
+        prepared.append((inp, outputs))
+        widest = max(widest, len(outputs) or 1)
+    pair_count = max(widest + 1, 4)
 
-    sheet.column_dimensions["A"].width = 36
-    sheet.column_dimensions["B"].width = 16
-    sheet.column_dimensions["C"].width = 36
-    sheet.column_dimensions["D"].width = 18
+    headers = ["Insert hole", "Insert face"]
+    for n in range(1, pair_count + 1):
+        headers.extend([f"Light {n} hole", f"Light {n} face"])
+
+    wb = openpyxl.Workbook()
+    sheet = wb.active
+    sheet.title = "Hole connections"
+    sheet.append(headers)
+    insert_fill = PatternFill("solid", fgColor="0E6E86")
+    light_fills = (
+        PatternFill("solid", fgColor="8A5A12"),
+        PatternFill("solid", fgColor="6E4A10"),
+    )
+    header_font = Font(bold=True, color="FFFFFF")
+    thin = Border(
+        left=Side(style="thin", color="E4DDD0"),
+        right=Side(style="thin", color="E4DDD0"),
+        top=Side(style="thin", color="E4DDD0"),
+        bottom=Side(style="thin", color="E4DDD0"),
+    )
+    for col in range(1, len(headers) + 1):
+        cell = sheet.cell(1, col)
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = thin
+        if col <= 2:
+            cell.fill = insert_fill
+        else:
+            pair = (col - 3) // 2
+            cell.fill = light_fills[pair % 2]
+    sheet.row_dimensions[1].height = 32
+    sheet.freeze_panes = "C2"
+    sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+
+    zebra = PatternFill("solid", fgColor="F7F4EE")
+    for row_i, (inp, outputs) in enumerate(prepared, start=2):
+        values: List[str] = [inp["hole_id"], _sheet_face(inp["face"])]
+        for n in range(pair_count):
+            if n < len(outputs):
+                values.append(str(outputs[n].get("hole_id") or ""))
+                values.append(_sheet_face(str(outputs[n].get("face") or "")))
+            else:
+                values.extend(["", ""])
+        sheet.append(values)
+        for col in range(1, len(headers) + 1):
+            cell = sheet.cell(row_i, col)
+            cell.border = thin
+            cell.alignment = Alignment(vertical="center")
+            if row_i % 2 == 0:
+                cell.fill = zebra
+            if col <= 2:
+                cell.font = Font(bold=True)
+
+    sheet.column_dimensions["A"].width = 28
+    sheet.column_dimensions["B"].width = 14
+    for col in range(3, len(headers) + 1):
+        letter = get_column_letter(col)
+        sheet.column_dimensions[letter].width = 28 if col % 2 == 1 else 14
 
     how = wb.create_sheet("How to fill")
-    how["A1"] = "Hole tree"
+    how["A1"] = "Hole connections"
     how["A1"].font = Font(bold=True, size=16)
     lines = [
-        "Each blue row is the hole the laser goes into. Name it once.",
-        "Each gold row under it is one hole where the light should appear.",
-        "Leave Insert hole and Insert face blank on a gold row. It belongs to the blue row above.",
-        "Insert face can be one letter (A) or two (A-F, C-F) when that hole is on both cameras.",
-        "Light-out face is the camera for that one light-out hole.",
-        "Put one hole in each cell. Do not make a comma list.",
-        "To add another light-out hole, insert a gold row under the same blue row and leave the insert cells blank.",
+        "Each row is one hole the laser goes into.",
+        "Insert hole and Insert face name that hole and the camera that sees it.",
+        "Light 1 hole and Light 1 face are the first place the light should appear.",
+        "Light 2 is the next place, on the same row. Light 3 is the one after that.",
+        "Leave a Light pair blank when you do not need it.",
+        "A face is one letter, such as B. Use A-F or C-F when that hole is on both cameras.",
+        "Type one hole name in each cell. Do not put several holes in one cell.",
+        "Example: laser into A14 on A-F. Light appears at SEC_M_M on B, then at A13 on B.",
+        "That row is: Insert hole A14, Insert face A-F, Light 1 hole SEC_M_M, Light 1 face B, Light 2 hole A13, Light 2 face B.",
         "Save this file, then in the app choose Load spreadsheet.",
     ]
     for i, line in enumerate(lines, start=3):
         how.cell(i, 1, line)
-    how.column_dimensions["A"].width = 110
+    how.column_dimensions["A"].width = 120
 
     path = os.path.abspath(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     wb.save(path)
     return path
+
+
+def write_tree_workbook(path: str, rules: Sequence[Dict[str, Any]]) -> str:
+    """Older name. Writes the one-row sheet."""
+    return write_connections_workbook(path, rules)
 
 
 def parse_spreadsheet(path: str) -> SpreadsheetParse:
