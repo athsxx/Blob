@@ -1292,8 +1292,9 @@ class PreInspectionSetupPage(QWidget):
             "Click to drop or move; +/- width; [ ] height; arrows rotate; a add; c copy; d delete; SPACE recapture. Save. "
             "Face A writes hole_positions_cam0.json, Face B cam1, and so on. "
             "You can continue with some faces empty and come back later.<br><br>"
-            "3. <b>Hole connections</b> — type the laser-in / light-out list, or load the spreadsheet "
-            "(.xlsx or .csv) when you have it. That file is not in the app yet. "
+            "3. <b>Hole connections</b> — Save spreadsheet writes an Excel tree. "
+            "The blue row is the hole the laser goes into. Each gold row under it is one light-out hole. "
+            "Edit the names in Excel, then Load spreadsheet. "
             "Saving replaces connectivity rules for this manifold and keeps a backup."
         )
         cvl.addWidget(explain)

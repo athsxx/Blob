@@ -33,6 +33,7 @@ from connectivity_rules_io import (
     roi_names_by_face,
     rules_from_spreadsheet,
     rules_to_connection_rows,
+    write_tree_workbook,
     save_rules_atomic,
     uniquify_rule_ids,
     validate_rules,
@@ -152,8 +153,9 @@ class RuleEditorDialog(QDialog):
         title.setObjectName("pageTitleMain")
         layout.addWidget(title)
         hint = QLabel(
-            f"{manifold}  —  Laser goes in one hole; light should appear at one or more others. "
-            "Names must match the labels on the face pictures."
+            f"{manifold}  —  Save spreadsheet writes the hole tree in Excel. "
+            "The blue row is the hole the laser goes into. Each gold row under it is one light-out hole. "
+            "Edit the names there, then Load spreadsheet. Names must match the rings on the face pictures."
         )
         hint.setWordWrap(True)
         hint.setObjectName("pageHint")
@@ -186,8 +188,12 @@ class RuleEditorDialog(QDialog):
         load_btn = QPushButton("Load spreadsheet")
         load_btn.setObjectName("pageSecondary")
         load_btn.clicked.connect(self._load_spreadsheet)
+        save_xlsx_btn = QPushButton("Save spreadsheet")
+        save_xlsx_btn.setObjectName("pageSecondary")
+        save_xlsx_btn.clicked.connect(self._save_spreadsheet)
         btn_row.addWidget(add_btn)
         btn_row.addWidget(del_btn)
+        btn_row.addWidget(save_xlsx_btn)
         btn_row.addWidget(load_btn)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
@@ -356,6 +362,40 @@ class RuleEditorDialog(QDialog):
             return
         for row in rows:
             self._add_row(row)
+
+    def _save_spreadsheet(self) -> None:
+        rules = self._rules_from_table()
+        if not rules:
+            QMessageBox.warning(
+                self,
+                "Save spreadsheet",
+                "Add at least one insert hole and one light-out hole first.",
+            )
+            return
+        start = os.path.join(self._config_dir, self._folder, "hole_connections_tree.xlsx")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save spreadsheet",
+            start,
+            "Excel (*.xlsx)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            write_tree_workbook(path, rules)
+        except Exception as exc:
+            QMessageBox.warning(self, "Save spreadsheet", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "Save spreadsheet",
+            "Saved the hole tree.\n\n"
+            "Blue row = laser goes into this hole.\n"
+            "Gold row under it = one hole where the light should appear.\n"
+            "Leave the insert cells blank on a gold row.",
+        )
 
     def _load_spreadsheet(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
