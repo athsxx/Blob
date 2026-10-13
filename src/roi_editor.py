@@ -272,8 +272,6 @@ class RoiCanvas(QWidget):
                     self._paint_ellipse(p, e, i == self.selected, scale, map_pt)
                 except Exception:
                     continue
-
-            self._paint_overlay(p)
         except Exception:
             return
         finally:
@@ -303,34 +301,6 @@ class RoiCanvas(QWidget):
         p.setPen(INK)
         lift = max(float(e["w"]), float(e["h"])) * scale
         p.drawText(center.x() - 10, center.y() - int(lift) - 8, str(e.get("name") or ""))
-
-    def _paint_overlay(self, p) -> None:
-        e = self.selected_ellipse()
-        if e is not None:
-            readout = (
-                f"{e.get('name') or '?'}  w={int(round(float(e['w'])))}  "
-                f"h={int(round(float(e['h'])))}  angle={int(round(float(e.get('angle', 0))))}°"
-            )
-        else:
-            readout = "No selection"
-        if self.place_name:
-            readout = f"Click to place {self.place_name}  ·  {readout}"
-        legend = (
-            "Drag: move  |  +/-: width  |  [/]: height  |  arrows: rotate  |  "
-            "a: add  |  c: copy  |  d: delete  |  SPACE: recapture"
-        )
-        p.setPen(Qt.PenStyle.NoPen)
-        panel = QColor(PAPER)
-        panel.setAlpha(230)
-        box = QRect(8, self.height() - 52, max(280, self.width() - 16), 44)
-        p.setBrush(panel)
-        p.drawRect(box)
-        p.setPen(QPen(PLUM, 1))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRect(box)
-        p.setPen(INK)
-        p.drawText(box.adjusted(8, 4, -8, -20), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, readout)
-        p.drawText(box.adjusted(8, 22, -8, -4), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, legend)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
@@ -506,30 +476,13 @@ class RoiEditorDialog(QDialog):
         self._rules = load_rules(os.path.join(config_dir, folder, "connectivity_rules.json"))
 
         self.setWindowTitle("Edit hole ROIs")
-        self.resize(980, 720)
+        self.resize(1240, 720)
         if stylesheet:
             self.setStyleSheet(stylesheet)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
-
-        if self._setup_mode:
-            hint_text = (
-                "Cameras are closed except the face you are editing. Click the freeze first so keys work. "
-                "Click to drop or move; +/- width; [ ] height; arrows rotate; a add; c copy; d delete; "
-                "SPACE recapture (opens this face once, then releases). Hole names come from the rule list."
-            )
-        else:
-            hint_text = (
-                "Cameras stay open. Click the freeze first so keys work. "
-                "Click to drop or move; +/- width; [ ] height; arrows rotate; a add; c copy; d delete. "
-                "Hole names come from connectivity rules."
-            )
-        hint = QLabel(hint_text)
-        hint.setObjectName("pageHint")
-        hint.setWordWrap(True)
-        root.addWidget(hint)
 
         tools = QHBoxLayout()
         tools.addWidget(QLabel("Face"))
@@ -590,7 +543,29 @@ class RoiEditorDialog(QDialog):
         self.canvas.add_at_cursor.connect(self._on_add_at_cursor)
         self.canvas.copy_requested.connect(self._on_copy)
         self.canvas.recapture_requested.connect(self._on_recapture)
-        root.addWidget(self.canvas, stretch=1)
+
+        keys = QLabel(
+            "Click the freeze first so keys work.\n\n"
+            "Click to drop or move\n"
+            "+ / −  width\n"
+            "[ / ]  height\n"
+            "Arrows  rotate\n"
+            "a  add\n"
+            "c  copy\n"
+            "d  delete\n"
+            "SPACE  recapture\n\n"
+            "Hole names come from the rule list."
+        )
+        keys.setObjectName("pageHint")
+        keys.setWordWrap(True)
+        keys.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        keys.setFixedWidth(240)
+
+        picture = QHBoxLayout()
+        picture.setSpacing(12)
+        picture.addWidget(self.canvas, stretch=1)
+        picture.addWidget(keys)
+        root.addLayout(picture, stretch=1)
 
         self._overlay = SessionBusyOverlay(self)
         self.face_combo.currentIndexChanged.connect(self._on_face_changed)

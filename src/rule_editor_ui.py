@@ -4,12 +4,13 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Set
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -25,7 +26,6 @@ from connectivity_rules_io import (
     RulesDiff,
     diff_rules,
     format_diff,
-    guided_step_count,
     hole_ids_for_face,
     load_rules_file,
     merge_connection_rows,
@@ -40,41 +40,47 @@ from connectivity_rules_io import (
 )
 
 FACE_LETTERS = list("ABCDEF")
+ROW_HEIGHT = 28
+SHEET_COMBO_QSS = (
+    "QComboBox { padding: 1px 6px; min-height: 20px; max-height: 26px; min-width: 0; }"
+)
 
 
-def _face_bits(face: str) -> str:
-    text = str(face or "?").replace("_OR_", "/").replace("_", "/")
-    return text or "?"
+class SheetCombo(QComboBox):
+    """Wheel scrolls the sheet. The list only changes while the dropdown is open."""
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setStyleSheet(SHEET_COMBO_QSS)
+        self.setFixedHeight(26)
+        self.installEventFilter(self)
 
-def _connection_tree(rows: List[ConnectionRow]) -> str:
-    """Group several light-out rows under the one hole the laser goes into."""
-    order: List[tuple] = []
-    grouped: Dict[tuple, List[tuple]] = {}
-    for row in rows:
-        key = (str(row.input_face or "").strip(), str(row.input_hole or "").strip())
-        if not key[0] and not key[1]:
-            continue
-        if key not in grouped:
-            grouped[key] = []
-            order.append(key)
-        grouped[key].append((str(row.output_face or "").strip(), str(row.output_hole or "").strip()))
-    if not order:
-        return "Add a row. One insert hole can have several light-out holes."
-    blocks: List[str] = []
-    for key in order:
-        face, hole = key
-        outs = grouped[key]
-        bits = ", ".join(
-            f"Light {index}: {_face_bits(out_face)} · {out_hole or '?'}"
-            for index, (out_face, out_hole) in enumerate(outs, start=1)
-        )
-        blocks.append(
-            f"<div><span style='color:#0077a8;font-weight:700'>"
-            f"{_face_bits(face)} · {hole or '?'}</span>"
-            f" <span style='color:#8a5a12;font-weight:600'>→ {bits}</span></div>"
-        )
-    return "".join(blocks)
+    def _scroll_sheet(self, event) -> None:
+        widget = self.parent()
+        table = None
+        while widget is not None:
+            if isinstance(widget, QTableWidget):
+                table = widget
+                break
+            widget = widget.parent()
+        if table is None:
+            return
+        bar = table.verticalScrollBar()
+        if bar is not None:
+            bar.setValue(bar.value() - int(event.angleDelta().y()))
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel and not self.view().isVisible():
+            self._scroll_sheet(event)
+            return True
+        return super().eventFilter(obj, event)
+
+    def wheelEvent(self, event):
+        if self.view().isVisible():
+            super().wheelEvent(event)
+            return
+        self._scroll_sheet(event)
 
 
 class _DryRunDialog(QDialog):
@@ -153,9 +159,7 @@ class RuleEditorDialog(QDialog):
         title.setObjectName("pageTitleMain")
         layout.addWidget(title)
         hint = QLabel(
-            f"{manifold}  —  Save spreadsheet writes one row per insert hole. "
-            "Light 1, Light 2, and Light 3 on that row are where the light should appear. "
-            "Edit the names there, then Load spreadsheet. Names must match the rings on the face pictures."
+            f"{manifold}  —  Each row is one light-out. Names must match the rings on the face pictures."
         )
         hint.setWordWrap(True)
         hint.setObjectName("pageHint")
@@ -168,12 +172,17 @@ class RuleEditorDialog(QDialog):
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels([
-            "Laser goes in — face",
-            "Laser goes in — hole",
-            "Light should appear — face",
-            "Light should appear — hole",
+            "Face in",
+            "Hole in",
+            "Face out",
+            "Hole out",
         ])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
+        self.table.setStyleSheet(SHEET_COMBO_QSS)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         layout.addWidget(self.table, stretch=1)
@@ -198,17 +207,6 @@ class RuleEditorDialog(QDialog):
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
-        self.tree = QLabel("Add a row to see where each hole sends the light.")
-        self.tree.setWordWrap(True)
-        self.tree.setTextFormat(Qt.TextFormat.RichText)
-        self.tree.setObjectName("pageHint")
-        layout.addWidget(self.tree)
-
-        self.preview = QLabel()
-        self.preview.setWordWrap(True)
-        self.preview.setObjectName("pageHint")
-        layout.addWidget(self.preview)
-
         save_row = QHBoxLayout()
         close_btn = QPushButton("Close")
         close_btn.setObjectName("pageGhost")
@@ -228,8 +226,6 @@ class RuleEditorDialog(QDialog):
                 self._add_row(row)
         else:
             self._add_row()
-        self._refresh_preview()
-        self.table.itemChanged.connect(lambda *_: self._refresh_preview())
 
     def _hole_choices(self, face: str) -> List[str]:
         names = list(hole_ids_for_face(self._old_rules, face))
@@ -238,8 +234,13 @@ class RuleEditorDialog(QDialog):
                 names.append(hid)
         return names
 
+    def _bind_sheet_combo(self, box: SheetCombo) -> None:
+        edit = box.lineEdit()
+        if edit is not None:
+            edit.installEventFilter(box)
+
     def _face_combo(self, choices: List[str], current: str, on_face=None) -> QComboBox:
-        box = QComboBox()
+        box = SheetCombo()
         box.addItems(choices)
         idx = box.findText(current)
         if idx >= 0:
@@ -249,18 +250,17 @@ class RuleEditorDialog(QDialog):
             box.setCurrentText(current)
         if on_face is not None:
             box.currentTextChanged.connect(on_face)
-        box.currentTextChanged.connect(lambda *_: self._refresh_preview())
         return box
 
     def _hole_combo(self, face: str, current: str) -> QComboBox:
-        box = QComboBox()
+        box = SheetCombo()
         box.setEditable(True)
+        self._bind_sheet_combo(box)
         box.addItems(self._hole_choices(face))
         if current:
             if box.findText(current) < 0:
                 box.addItem(current)
             box.setCurrentText(current)
-        box.currentTextChanged.connect(lambda *_: self._refresh_preview())
         return box
 
     def _add_row(self, row: Optional[ConnectionRow] = None) -> None:
@@ -311,14 +311,13 @@ class RuleEditorDialog(QDialog):
         self.table.setCellWidget(r, 1, in_hole_box)
         self.table.setCellWidget(r, 2, out_face_box)
         self.table.setCellWidget(r, 3, out_hole_box)
-        self._refresh_preview()
+        self.table.setRowHeight(r, ROW_HEIGHT)
 
     def _remove_row(self) -> None:
         row = self.table.currentRow()
         if row < 0:
             return
         self.table.removeRow(row)
-        self._refresh_preview()
 
     def _combo_text(self, row: int, col: int) -> str:
         w = self.table.cellWidget(row, col)
@@ -340,20 +339,6 @@ class RuleEditorDialog(QDialog):
 
     def _rules_from_table(self) -> List[Dict[str, Any]]:
         return merge_connection_rows(self._rows_from_table())
-
-    def _refresh_preview(self) -> None:
-        rules = self._rules_from_table()
-        n_rows = self.table.rowCount()
-        steps = guided_step_count(rules, self._available)
-        dupes = len(self._old_rules) - len({r.get("rule_id") for r in self._old_rules})
-        extra = ""
-        if dupes > 0:
-            extra = f" Current file has duplicate ids; they merge on save."
-        self.preview.setText(
-            f"Guided steps: {steps}  (from {len(rules)} connections, {n_rows} rows)."
-            f"{extra}"
-        )
-        self.tree.setText(_connection_tree(self._rows_from_table()))
 
     def _replace_table(self, rows: List[ConnectionRow]) -> None:
         self.table.setRowCount(0)
