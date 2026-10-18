@@ -141,9 +141,18 @@ def normalize_hole_id(raw: Any) -> str:
 
 
 def is_unnamed_counter(raw: Any) -> bool:
-    """T-T and Z-Z counters are two holes each and are not named yet."""
+    """Bare T-T and Z-Z counters are not one hole.
+
+    A drilled-down name such as SEC. T-T CENTRE COUNTER or SEC. Z3-Z3 COUNTER
+    is a real hole and is kept.
+    """
     key = normalize_hole_id(raw)
-    return "COUNTER" in key and ("T_T" in key or "Z_Z" in key)
+    return key in {
+        "T_T_COUNTER",
+        "SEC_T_T_COUNTER",
+        "Z_Z_COUNTER",
+        "SEC_Z_Z_COUNTER",
+    }
 
 
 def normalize_input_face(raw: Any) -> str:
