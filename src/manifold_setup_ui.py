@@ -34,9 +34,12 @@ from config_loader import (
     list_config_subdirs_with_rules,
     slug_manifold_folder_id,
     validate_manifold_folder_id,
+    face_roi_basename,
 )
+from connectivity_rules_io import inject_inspection_template, write_rules_from_workbook
 
 EMPTY_ROIS: Dict[str, Any] = {"circles": []}
+BLANK_TEMPLATE = "__blank__"
 
 
 class _ManifoldDiskWorker(QThread):
@@ -65,26 +68,43 @@ class _ManifoldDiskWorker(QThread):
         try:
             dest_dir = os.path.join(self._config_dir, self._folder_id)
             os.makedirs(dest_dir, exist_ok=True)
-            src_rules = os.path.join(self._config_dir, self._template, "connectivity_rules.json")
-            shutil.copy2(src_rules, os.path.join(dest_dir, "connectivity_rules.json"))
-            for _face, base in self._face_basenames.items():
+            if self._template == BLANK_TEMPLATE:
+                inject_inspection_template(dest_dir, self._config_dir)
+            else:
+                src_dir = os.path.join(self._config_dir, self._template)
+                src_sheet = os.path.join(src_dir, "manifold_inspection.xlsx")
+                if not os.path.isfile(src_sheet):
+                    src_sheet = os.path.join(src_dir, "dalia_manifold_inspection.xlsx")
+                if os.path.isfile(src_sheet):
+                    dest_sheet = os.path.join(dest_dir, "manifold_inspection.xlsx")
+                    shutil.copy2(src_sheet, dest_sheet)
+                    write_rules_from_workbook(
+                        dest_sheet,
+                        os.path.join(dest_dir, "connectivity_rules.json"),
+                    )
+                else:
+                    src_rules = os.path.join(src_dir, "connectivity_rules.json")
+                    shutil.copy2(src_rules, os.path.join(dest_dir, "connectivity_rules.json"))
+            names = {face_roi_basename(face) for face in "ABCDEF"}
+            names.update(self._face_basenames.values())
+            for base in sorted(names):
                 p = os.path.join(dest_dir, base)
                 if not os.path.isfile(p):
-                    with open(p, "w", encoding="utf-8") as f:
-                        json.dump(EMPTY_ROIS, f, indent=2)
+                    with open(p, "w", encoding="utf-8") as handle:
+                        json.dump(EMPTY_ROIS, handle, indent=2)
+                        handle.write("\n")
             entries = load_manifold_registry_entries(self._config_dir)
             entries.append({"label": self._display, "folder": self._folder_id})
             save_manifold_registry_entries(self._config_dir, entries)
             self.succeeded.emit()
-        except OSError as e:
+        except (OSError, ValueError) as e:
             self.failed.emit(str(e))
 
 
 class AddManifoldDialog(QDialog):
     """
-    Create config/<folder>/ with connectivity_rules.json (copied from template),
-    empty hole JSONs per face using filenames from cameras.json (Face→USB mapping).
-    Per-face buttons launch calibrate.py with the correct USB index and ROI path.
+    Create config/<folder>/. A blank manifold receives the standard inspection
+    sheet, and connectivity_rules.json is built from that sheet.
     """
 
     def __init__(
@@ -118,7 +138,9 @@ class AddManifoldDialog(QDialog):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
 
-        root.addWidget(QLabel("Create a new manifold: on-disk folder, rules file, and ROI files per face."))
+        root.addWidget(QLabel(
+            "Create a new manifold from the blank inspection sheet, or copy an existing manifold's rules."
+        ))
 
         form = QFormLayout()
         self.edit_name = QLineEdit()
@@ -134,7 +156,7 @@ class AddManifoldDialog(QDialog):
 
         self.combo_template = QComboBox()
         self._reload_templates_combo()
-        root.addWidget(QLabel("Copy connectivity rules from:"))
+        root.addWidget(QLabel("Start from:"))
         root.addWidget(self.combo_template)
 
         self.btn_create = QPushButton("Create manifold on disk")
@@ -142,7 +164,10 @@ class AddManifoldDialog(QDialog):
         self.btn_create.clicked.connect(self._on_create)
         root.addWidget(self.btn_create)
 
-        self.status_lbl = QLabel("After creation, use Calibrate per face (USB indices match cameras.json).")
+        self.status_lbl = QLabel(
+            "The blank sheet is copied in, then the rules file is built from that sheet. "
+            "Fill HOLE OPEN and the same columns become the rules."
+        )
         self.status_lbl.setWordWrap(True)
         self.status_lbl.setObjectName("pageHint")
         root.addWidget(self.status_lbl)
@@ -197,10 +222,9 @@ class AddManifoldDialog(QDialog):
 
     def _reload_templates_combo(self):
         self.combo_template.clear()
+        self.combo_template.addItem("Blank standard sheet", userData=BLANK_TEMPLATE)
         for name in list_config_subdirs_with_rules(self._config_dir):
-            self.combo_template.addItem(name, userData=name)
-        if self.combo_template.count() == 0:
-            self.combo_template.addItem("(no template found)", userData=None)
+            self.combo_template.addItem(f"Copy {name}", userData=name)
 
     def _on_name_changed(self, text: str):
         if not self._folder_user_edited:
@@ -220,10 +244,11 @@ class AddManifoldDialog(QDialog):
             return
 
         template = self.combo_template.currentData()
-        if not template:
-            QMessageBox.warning(self, "Add manifold", "Pick a template folder that contains connectivity_rules.json.")
-            return
-
+        if template != BLANK_TEMPLATE:
+            src_rules = os.path.join(self._config_dir, str(template), "connectivity_rules.json")
+            if not os.path.isfile(src_rules):
+                QMessageBox.critical(self, "Add manifold", f"Missing template rules:\n{src_rules}")
+                return
         entries = load_manifold_registry_entries(self._config_dir)
         if any(str(e.get("label", "")).strip() == display for e in entries):
             QMessageBox.warning(self, "Add manifold", "A manifold with this display name already exists.")
@@ -235,11 +260,6 @@ class AddManifoldDialog(QDialog):
         dest_dir = os.path.join(self._config_dir, folder_id)
         if os.path.exists(dest_dir):
             QMessageBox.warning(self, "Add manifold", f"Folder already exists:\n{dest_dir}")
-            return
-
-        src_rules = os.path.join(self._config_dir, template, "connectivity_rules.json")
-        if not os.path.isfile(src_rules):
-            QMessageBox.critical(self, "Add manifold", f"Missing template rules:\n{src_rules}")
             return
 
         if self._disk_worker is not None and self._disk_worker.isRunning():

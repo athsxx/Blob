@@ -556,15 +556,30 @@ def main():
             step_timeout_remaining = [0]   # mutable container for closure
             step_timed_out = [False]        # guard against double-advance
 
-            def _reset_step_timer():
-                step_timeout_remaining[0] = STEP_TIMEOUT_SECS
+            def _step_is_manual() -> bool:
+                step = engine.get_current_guided_step() or {}
+                return str(step.get("execution") or "auto").strip().lower() == "manual"
+
+            def _arm_step_clock():
+                """Automatic holes get the 60s clock. Manual holes wait for Pass or Fail."""
                 step_timed_out[0] = False
-                if hasattr(dashboard, 'instruction_panel'):
+                if _step_is_manual():
+                    step_timer.stop()
+                    step_timeout_remaining[0] = 0
+                    if hasattr(dashboard, "present_manual_check"):
+                        dashboard.present_manual_check()
+                    return
+                if hasattr(dashboard, "dismiss_manual_check"):
+                    dashboard.dismiss_manual_check()
+                step_timeout_remaining[0] = STEP_TIMEOUT_SECS
+                if hasattr(dashboard, "instruction_panel"):
                     dashboard.instruction_panel.set_countdown(STEP_TIMEOUT_SECS)
+                if not step_timer.isActive():
+                    step_timer.start()
 
             def _tick_step_timer():
                 """Called every 1 second while inspection is running."""
-                if not engine._running or engine._paused:
+                if not engine._running or engine._paused or _step_is_manual():
                     return
                 if step_timed_out[0]:
                     return
@@ -597,8 +612,11 @@ def main():
                         if next_step is not None:
                             new_idx = engine._guided_step_index
                             dashboard.update_guided_step(new_idx)
-                            _reset_step_timer()
+                            _arm_step_clock()
                         else:
+                            step_timer.stop()
+                            if hasattr(dashboard, "dismiss_manual_check"):
+                                dashboard.dismiss_manual_check()
                             dashboard.instruction_panel.status_lbl.setText("✓  ALL STEPS COMPLETE")
                             dashboard.instruction_panel.status_lbl.setStyleSheet(
                                 "color: #2f6b45; font-size: 24px; font-weight: bold;"
@@ -615,8 +633,7 @@ def main():
                 engine.start()
                 log_ui_throttle.clear()
                 logger.log_system("INFO", "Inspection STARTED by operator")
-                _reset_step_timer()
-                step_timer.start()
+                _arm_step_clock()
 
             def _on_stop():
                 engine.stop()
@@ -630,7 +647,10 @@ def main():
 
             def _on_resume():
                 engine.resume()
-                step_timer.start()
+                if _step_is_manual():
+                    step_timer.stop()
+                else:
+                    step_timer.start()
                 logger.log_system("INFO", "Inspection RESUMED by operator")
 
             dashboard.sig_start.connect(_on_start)
@@ -648,6 +668,43 @@ def main():
                     logger.log_system("INFO", f"Manual override: {rule_id} → {result}")
 
             dashboard.sig_override.connect(handle_override)
+
+            def handle_manual(rule_id: str, result: str):
+                if not engine._running:
+                    return
+                if rule_id != engine._active_rule_id or not _step_is_manual():
+                    return
+                if step_timed_out[0]:
+                    return
+                step_timed_out[0] = True
+                eval_result = engine.add_override(rule_id, result)
+                if eval_result:
+                    logger.log_inspection(eval_result.to_dict())
+                    dashboard.update_result(eval_result.to_dict())
+                logger.log_system("INFO", f"Manual check {rule_id} → {result}")
+                step_idx = engine._guided_step_index
+                if engine._guided_sequence and 0 <= step_idx < len(engine._guided_sequence):
+                    dashboard.update_step_result(step_idx, passed=(result == "PASS"))
+
+                def _advance_manual():
+                    next_step = engine.advance_guided_step()
+                    if next_step is not None:
+                        dashboard.update_guided_step(engine._guided_step_index)
+                        _arm_step_clock()
+                    else:
+                        step_timer.stop()
+                        if hasattr(dashboard, "dismiss_manual_check"):
+                            dashboard.dismiss_manual_check()
+                        dashboard.instruction_panel.status_lbl.setText("✓  ALL STEPS COMPLETE")
+                        dashboard.instruction_panel.status_lbl.setStyleSheet(
+                            "color: #2f6b45; font-size: 24px; font-weight: bold;"
+                        )
+                        dashboard.instruction_panel.countdown_lbl.setText("")
+
+                QTimer.singleShot(2000, _advance_manual)
+
+            if hasattr(dashboard, "sig_manual_result"):
+                dashboard.sig_manual_result.connect(handle_manual)
 
             def _on_reload_rules():
                 if engine.is_running:
@@ -766,8 +823,11 @@ def main():
                                         if next_step is not None:
                                             new_idx = engine._guided_step_index
                                             dashboard.update_guided_step(new_idx)
-                                            _reset_step_timer()
+                                            _arm_step_clock()
                                         else:
+                                            step_timer.stop()
+                                            if hasattr(dashboard, "dismiss_manual_check"):
+                                                dashboard.dismiss_manual_check()
                                             # Sequence complete
                                             dashboard.instruction_panel.status_lbl.setText(
                                                 "✓  ALL STEPS COMPLETE"

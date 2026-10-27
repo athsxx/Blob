@@ -14,7 +14,13 @@ venv/
 logs/*.log
 logs/*.jsonl
 logs/*.csv
+logs/*.json
 src/logs/*.log
+
+# Editor backups, Graphify cache, Apple Numbers drafts
+*.bak
+*.numbers
+graphify-out/
 
 # Debug output
 camera_indices_check/

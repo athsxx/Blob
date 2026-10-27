@@ -28,7 +28,7 @@ Every later shift: mode → manifold if needed → live → START.
 
 ## Excel ingest
 
-The DALIA workbook is `config/DALIA/dalia_manifold_inspection.xlsx`, sheet `HOLE OPEN`. Rules in `connectivity_rules.json` come from the connection rows. Length rows and the Mock Up column are not rules. Hole ids are the sheet words in ALL CAPS, sections as `SEC. T1-T1`. Numbered T and Z holes stay numbered. Do not invent hole pixel positions.
+The DALIA workbook is `config/DALIA/dalia_manifold_inspection.xlsx`, sheet `HOLE OPEN`: Manual, Insert Rod, View, For Inspection, View. One row is one insert. `YES` in Manual runs that hole last with Pass or Fail and no clock. A new manifold receives `config/template/manifold_inspection.xlsx` copied in as `manifold_inspection.xlsx`. `connectivity_rules.json` is then built from that sheet. Copying an existing manifold does the same when that folder already has an inspection workbook.
 
 A face written `C-F`, `A-F`, `A-E`, or `B-C` is one hole visible on both cameras. Light on either camera counts. A shorter face list means the last face covers the remaining holes.
 

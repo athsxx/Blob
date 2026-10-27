@@ -460,6 +460,11 @@ class LogicEngine:
         if not tracker:
             return []
 
+        # A manual hole is Pass or Fail from the operator. The cameras do not decide it.
+        current = self.get_current_guided_step() or {}
+        if str(current.get("execution") or "").strip().lower() == "manual":
+            return []
+
         # Build a FILTERED detected-holes set: only holes that are expected
         # outputs of the current rule (ignore everything else). Use the full rule's
         # expected_outputs so compound faces (e.g. C_F) accept detection on any candidate face.
@@ -756,14 +761,15 @@ class LogicEngine:
             seen_rule_ids.add(rid)
             eligible.append(rule)
 
-        # Sort by the first input face, then by hole_id alphabetically.
-        # A compound face such as A_F is still one step.
+        # Automatic holes first, face A–F then hole name.
+        # Manual holes run after every automatic hole, in the same face order.
         def _sort_key(rule: Dict) -> tuple:
             faces = parse_face_to_faces(str(rule.get('input', {}).get('face', '')))
             face = faces[0] if faces else 'Z'
             hole = rule.get('input', {}).get('hole_id', '')
             face_idx = face_order.index(face) if face in face_order else 99
-            return (face_idx, hole)
+            manual = 1 if str(rule.get("execution") or "").strip().lower() == "manual" else 0
+            return (manual, face_idx, hole)
 
         eligible.sort(key=_sort_key)
 
@@ -799,6 +805,11 @@ class LogicEngine:
                 'input_face': input_face,
                 'input_hole': input_hole,
                 'expected_outputs': expected_outputs,
+                'execution': (
+                    "manual"
+                    if str(rule.get("execution") or "").strip().lower() == "manual"
+                    else "auto"
+                ),
             })
 
         self._guided_sequence = steps
@@ -852,6 +863,11 @@ class LogicEngine:
             "input_face": input_face,
             "input_hole": input_hole,
             "expected_outputs": expected_outputs,
+            "execution": (
+                "manual"
+                if str(rule.get("execution") or "").strip().lower() == "manual"
+                else "auto"
+            ),
         }
 
     def set_guided_step(self, step_index: int):

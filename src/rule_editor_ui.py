@@ -4,83 +4,55 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Set
 
-from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtWidgets import (
-    QComboBox,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
+from PyQt6.QtCore import Qt
 
 from config_loader import manifold_folder_for_label
+from logic_engine import parse_face_to_faces
 from connectivity_rules_io import (
     ConnectionRow,
-    OUTPUT_FACE_CHOICES,
     RulesDiff,
+    carry_manual_checks,
     diff_rules,
     format_diff,
     hole_ids_for_face,
+    inspection_rows_from_rules,
     load_rules_file,
     merge_connection_rows,
+    normalize_hole_id,
+    normalize_input_face,
+    pair_exit_holes_and_faces,
     parse_spreadsheet,
     roi_names_by_face,
     rules_from_spreadsheet,
-    rules_to_connection_rows,
-    write_tree_workbook,
     save_rules_atomic,
+    split_cell_list,
     uniquify_rule_ids,
     validate_rules,
+    write_tree_workbook,
 )
 
 FACE_LETTERS = list("ABCDEF")
 ROW_HEIGHT = 28
-SHEET_COMBO_QSS = (
-    "QComboBox { padding: 1px 6px; min-height: 20px; max-height: 26px; min-width: 0; }"
-)
-
-
-class SheetCombo(QComboBox):
-    """Wheel scrolls the sheet. The list only changes while the dropdown is open."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setStyleSheet(SHEET_COMBO_QSS)
-        self.setFixedHeight(26)
-        self.installEventFilter(self)
-
-    def _scroll_sheet(self, event) -> None:
-        widget = self.parent()
-        table = None
-        while widget is not None:
-            if isinstance(widget, QTableWidget):
-                table = widget
-                break
-            widget = widget.parent()
-        if table is None:
-            return
-        bar = table.verticalScrollBar()
-        if bar is not None:
-            bar.setValue(bar.value() - int(event.angleDelta().y()))
-
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.Wheel and not self.view().isVisible():
-            self._scroll_sheet(event)
-            return True
-        return super().eventFilter(obj, event)
-
-    def wheelEvent(self, event):
-        if self.view().isVisible():
-            super().wheelEvent(event)
-            return
-        self._scroll_sheet(event)
+COL_MANUAL = 0
+COL_INSERT = 1
+COL_INSERT_VIEW = 2
+COL_INSPECTION = 3
+COL_EXIT_VIEW = 4
 
 
 class _DryRunDialog(QDialog):
@@ -121,7 +93,7 @@ class _DryRunDialog(QDialog):
 
 
 class RuleEditorDialog(QDialog):
-    """Hole connections: one row = laser in + one light-out. Save writes connectivity_rules.json."""
+    """Hole connections: one row per insert, same columns as the inspection sheet."""
 
     def __init__(
         self,
@@ -159,7 +131,9 @@ class RuleEditorDialog(QDialog):
         title.setObjectName("pageTitleMain")
         layout.addWidget(title)
         hint = QLabel(
-            f"{manifold}  —  Each row is one light-out. Names must match the rings on the face pictures."
+            f"{manifold}  —  One row is one insert, the same as the inspection sheet. "
+            "For Inspection and the second View are comma lists. "
+            "Tick Manual to run that hole last: you press Pass or Fail, and there is no timer."
         )
         hint.setWordWrap(True)
         hint.setObjectName("pageHint")
@@ -170,19 +144,21 @@ class RuleEditorDialog(QDialog):
             warn.setStyleSheet("color: #8a5a12; font-weight: 600;")
             layout.addWidget(warn)
 
-        self.table = QTableWidget(0, 4)
+        self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels([
-            "Face in",
-            "Hole in",
-            "Face out",
-            "Hole out",
+            "Manual",
+            "Insert Rod",
+            "View",
+            "For Inspection",
+            "View",
         ])
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(COL_MANUAL, QHeaderView.ResizeMode.ResizeToContents)
+        for col in (COL_INSERT, COL_INSERT_VIEW, COL_INSPECTION, COL_EXIT_VIEW):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
         header.setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
-        self.table.setStyleSheet(SHEET_COMBO_QSS)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         layout.addWidget(self.table, stretch=1)
@@ -220,12 +196,7 @@ class RuleEditorDialog(QDialog):
         save_row.addWidget(self._save_btn)
         layout.addLayout(save_row)
 
-        rows = rules_to_connection_rows(self._old_rules)
-        if rows:
-            for row in rows:
-                self._add_row(row)
-        else:
-            self._add_row()
+        self._fill_from_rules(self._old_rules)
 
     def _hole_choices(self, face: str) -> List[str]:
         names = list(hole_ids_for_face(self._old_rules, face))
@@ -234,83 +205,33 @@ class RuleEditorDialog(QDialog):
                 names.append(hid)
         return names
 
-    def _bind_sheet_combo(self, box: SheetCombo) -> None:
-        edit = box.lineEdit()
-        if edit is not None:
-            edit.installEventFilter(box)
+    def _line(self, text: str) -> QLineEdit:
+        edit = QLineEdit(text)
+        edit.setEnabled(not self._inspection_running)
+        edit.setFixedHeight(26)
+        return edit
 
-    def _face_combo(self, choices: List[str], current: str, on_face=None) -> QComboBox:
-        box = SheetCombo()
-        box.addItems(choices)
-        idx = box.findText(current)
-        if idx >= 0:
-            box.setCurrentIndex(idx)
-        elif current:
-            box.addItem(current)
-            box.setCurrentText(current)
-        if on_face is not None:
-            box.currentTextChanged.connect(on_face)
-        return box
-
-    def _hole_combo(self, face: str, current: str) -> QComboBox:
-        box = SheetCombo()
-        box.setEditable(True)
-        self._bind_sheet_combo(box)
-        box.addItems(self._hole_choices(face))
-        if current:
-            if box.findText(current) < 0:
-                box.addItem(current)
-            box.setCurrentText(current)
-        return box
-
-    def _add_row(self, row: Optional[ConnectionRow] = None) -> None:
+    def _add_row(self, item: Optional[Dict[str, str]] = None) -> None:
+        item = item or {}
         r = self.table.rowCount()
         self.table.insertRow(r)
-        in_face = (row.input_face if row else "A") or "A"
-        out_face = (row.output_face if row else "A") or "A"
-        in_hole = row.input_hole if row else ""
-        out_hole = row.output_hole if row else ""
-
-        in_face_box = self._face_combo(FACE_LETTERS, in_face)
-        out_face_box = self._face_combo(OUTPUT_FACE_CHOICES, out_face)
-        in_hole_box = self._hole_combo(in_face, in_hole)
-        out_hole_box = self._hole_combo(
-            out_face[0] if out_face else "A",
-            out_hole,
+        manual = QCheckBox()
+        manual.setToolTip(
+            "YES on the sheet. This hole runs last. You press Pass or Fail. No timer."
         )
-
-        def _refill_in(_text: str) -> None:
-            face = in_face_box.currentText()
-            prev = in_hole_box.currentText()
-            in_hole_box.blockSignals(True)
-            in_hole_box.clear()
-            in_hole_box.addItems(self._hole_choices(face))
-            if prev:
-                if in_hole_box.findText(prev) < 0:
-                    in_hole_box.addItem(prev)
-                in_hole_box.setCurrentText(prev)
-            in_hole_box.blockSignals(False)
-
-        def _refill_out(_text: str) -> None:
-            face = out_face_box.currentText()
-            letter = face[0] if face else "A"
-            prev = out_hole_box.currentText()
-            out_hole_box.blockSignals(True)
-            out_hole_box.clear()
-            out_hole_box.addItems(self._hole_choices(letter))
-            if prev:
-                if out_hole_box.findText(prev) < 0:
-                    out_hole_box.addItem(prev)
-                out_hole_box.setCurrentText(prev)
-            out_hole_box.blockSignals(False)
-
-        in_face_box.currentTextChanged.connect(_refill_in)
-        out_face_box.currentTextChanged.connect(_refill_out)
-
-        self.table.setCellWidget(r, 0, in_face_box)
-        self.table.setCellWidget(r, 1, in_hole_box)
-        self.table.setCellWidget(r, 2, out_face_box)
-        self.table.setCellWidget(r, 3, out_hole_box)
+        manual.setChecked(str(item.get("manual") or "").strip().upper() == "YES")
+        manual.setEnabled(not self._inspection_running)
+        wrap = QWidget()
+        wrap_layout = QHBoxLayout(wrap)
+        wrap_layout.setContentsMargins(0, 0, 0, 0)
+        wrap_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        wrap_layout.addWidget(manual)
+        wrap._manual_box = manual
+        self.table.setCellWidget(r, COL_MANUAL, wrap)
+        self.table.setCellWidget(r, COL_INSERT, self._line(item.get("insert", "")))
+        self.table.setCellWidget(r, COL_INSERT_VIEW, self._line(item.get("insert_view", "A")))
+        self.table.setCellWidget(r, COL_INSPECTION, self._line(item.get("inspection", "")))
+        self.table.setCellWidget(r, COL_EXIT_VIEW, self._line(item.get("exit_view", "A")))
         self.table.setRowHeight(r, ROW_HEIGHT)
 
     def _remove_row(self) -> None:
@@ -319,34 +240,49 @@ class RuleEditorDialog(QDialog):
             return
         self.table.removeRow(row)
 
-    def _combo_text(self, row: int, col: int) -> str:
-        w = self.table.cellWidget(row, col)
-        if isinstance(w, QComboBox):
-            return w.currentText().strip()
-        item = self.table.item(row, col)
-        return item.text().strip() if item else ""
+    def _cell_text(self, row: int, col: int) -> str:
+        widget = self.table.cellWidget(row, col)
+        if isinstance(widget, QLineEdit):
+            return widget.text().strip()
+        return ""
+
+    def _manual_box(self, row: int) -> Optional[QCheckBox]:
+        wrap = self.table.cellWidget(row, COL_MANUAL)
+        box = getattr(wrap, "_manual_box", None)
+        return box if isinstance(box, QCheckBox) else None
 
     def _rows_from_table(self) -> List[ConnectionRow]:
         rows: List[ConnectionRow] = []
         for r in range(self.table.rowCount()):
-            rows.append(ConnectionRow(
-                input_face=self._combo_text(r, 0),
-                input_hole=self._combo_text(r, 1),
-                output_face=self._combo_text(r, 2),
-                output_hole=self._combo_text(r, 3),
-            ))
+            box = self._manual_box(r)
+            execution = "manual" if box is not None and box.isChecked() else "auto"
+            insert = self._cell_text(r, COL_INSERT)
+            insert_view = self._cell_text(r, COL_INSERT_VIEW)
+            pairs = pair_exit_holes_and_faces(
+                split_cell_list(self._cell_text(r, COL_INSPECTION)),
+                split_cell_list(self._cell_text(r, COL_EXIT_VIEW)),
+            )
+            for hole, face in pairs:
+                rows.append(ConnectionRow(
+                    input_face=insert_view,
+                    input_hole=insert,
+                    output_face=face,
+                    output_hole=hole,
+                    execution=execution,
+                ))
         return rows
 
     def _rules_from_table(self) -> List[Dict[str, Any]]:
         return merge_connection_rows(self._rows_from_table())
 
-    def _replace_table(self, rows: List[ConnectionRow]) -> None:
+    def _fill_from_rules(self, rules: List[Dict[str, Any]]) -> None:
         self.table.setRowCount(0)
-        if not rows:
+        sheet_rows = inspection_rows_from_rules(rules)
+        if not sheet_rows:
             self._add_row()
             return
-        for row in rows:
-            self._add_row(row)
+        for item in sheet_rows:
+            self._add_row(item)
 
     def _save_spreadsheet(self) -> None:
         rules = self._rules_from_table()
@@ -357,7 +293,7 @@ class RuleEditorDialog(QDialog):
                 "Add at least one insert hole and one light-out hole first.",
             )
             return
-        start = os.path.join(self._config_dir, self._folder, "hole_connections.xlsx")
+        start = os.path.join(self._config_dir, self._folder, "manifold_inspection.xlsx")
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save spreadsheet",
@@ -376,10 +312,9 @@ class RuleEditorDialog(QDialog):
         QMessageBox.information(
             self,
             "Save spreadsheet",
-            "Saved the hole sheet.\n\n"
-            "Each row is one hole the laser goes into.\n"
-            "Light 1, Light 2, and Light 3 on that row are where the light should appear.\n"
-            "Leave a Light pair blank if you do not need it.",
+            "Saved the inspection sheet.\n\n"
+            "One row is one insert. For Inspection and the second View are comma lists.\n"
+            "Write YES in Manual when that hole should wait for Pass or Fail.",
         )
 
     def _load_spreadsheet(self) -> None:
@@ -400,6 +335,7 @@ class RuleEditorDialog(QDialog):
             )
             return
         rules, parsed = rules_from_spreadsheet(path)
+        rules = carry_manual_checks(self._old_rules, rules)
         if parsed.errors and not rules:
             QMessageBox.warning(self, "Load spreadsheet", "\n".join(parsed.errors))
             return
@@ -427,7 +363,7 @@ class RuleEditorDialog(QDialog):
         dlg = _DryRunDialog(text, self._stylesheet, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        self._replace_table(rules_to_connection_rows(rules))
+        self._fill_from_rules(rules)
         self._save_rules(rules, diff)
 
     def _save(self) -> None:
@@ -447,12 +383,18 @@ class RuleEditorDialog(QDialog):
             QMessageBox.warning(self, "Hole connections", "Add at least one connection.")
             return
         typed_new = []
+        seen_new = set()
         for row in self._rows_from_table():
-            face = row.input_face
-            hole = row.input_hole
-            known = set(self._hole_choices(face))
-            if hole and hole not in known:
-                typed_new.append(f"Face {face}: {hole}")
+            face = normalize_input_face(row.input_face)
+            hole = normalize_hole_id(row.input_hole)
+            letters = parse_face_to_faces(face) or ["A"]
+            known = set()
+            for letter in letters:
+                known.update(self._hole_choices(letter))
+            label = f"Face {face}: {hole}"
+            if hole and hole not in known and label not in seen_new:
+                seen_new.add(label)
+                typed_new.append(label)
         if typed_new:
             go = QMessageBox.question(
                 self,

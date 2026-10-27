@@ -122,6 +122,7 @@ _HEADER_ALIASES = {
         "for inspection",
         "light-out hole", "light out hole",
     },
+    "execution": {"manual", "execution", "manual check"},
     "logic": {"logic", "and/or", "and or"},
     "mandatory": {"mandatory", "required"},
 }
@@ -143,6 +144,7 @@ class ConnectionRow:
     mandatory: bool = True
     logic: str = DEFAULT_LOGIC
     source_row: Optional[int] = None
+    execution: str = "auto"
 
 
 @dataclass
@@ -169,6 +171,7 @@ class RulesDiff:
     guided_after: int
     old_count: int
     new_count: int
+    manual_count: int = 0
 
     def is_noop(self) -> bool:
         return not self.added and not self.removed and not self.changed
@@ -363,6 +366,14 @@ def _logic(raw: Any) -> str:
     return "OR" if text == "OR" else DEFAULT_LOGIC
 
 
+def normalize_execution(raw: Any) -> str:
+    """``manual`` is an operator Pass/Fail with no timer. Anything else is automatic."""
+    text = str(raw or "").strip().lower()
+    if text in {"manual", "yes", "y", "true", "1", "x"}:
+        return "manual"
+    return "auto"
+
+
 def canonical_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
     inp = rule.get("input") or {}
     face = normalize_input_face(inp.get("face", ""))
@@ -387,6 +398,7 @@ def canonical_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
         "input": {"face": face, "hole_id": hole},
         "expected_outputs": outputs,
         "logic": _logic(rule.get("logic")),
+        "execution": normalize_execution(rule.get("execution")),
         "timing": {
             "max_delay_ms": int(timing.get("max_delay_ms") or DEFAULT_TIMING["max_delay_ms"]),
             "min_stable_frames": int(
@@ -413,9 +425,12 @@ def merge_connection_rows(rows: Sequence[ConnectionRow]) -> List[Dict[str, Any]]
                 "input": {"face": face, "hole_id": hole},
                 "expected_outputs": [],
                 "logic": _logic(row.logic),
+                "execution": normalize_execution(row.execution),
                 "timing": dict(DEFAULT_TIMING),
             }
             order.append(key)
+        elif normalize_execution(row.execution) == "manual":
+            grouped[key]["execution"] = "manual"
         outs = grouped[key]["expected_outputs"]
         seen = {(o["face"], o["hole_id"]) for o in outs}
         if (oface, ohole) not in seen:
@@ -447,6 +462,7 @@ def rules_to_connection_rows(rules: Sequence[Dict[str, Any]]) -> List[Connection
                 output_hole=out.get("hole_id", ""),
                 mandatory=bool(out.get("mandatory", True)),
                 logic=logic,
+                execution=canon["execution"],
             ))
     return rows
 
@@ -611,6 +627,8 @@ def _index_by_input(rules: Sequence[Dict[str, Any]]) -> Dict[Tuple[str, str], Di
             indexed[key] = canon
             continue
         existing = indexed[key]
+        if canon.get("execution") == "manual":
+            existing["execution"] = "manual"
         seen = {(o["face"], o["hole_id"]) for o in existing["expected_outputs"]}
         for out in canon["expected_outputs"]:
             t = (out["face"], out["hole_id"])
@@ -625,7 +643,7 @@ def _outputs_key(rule: Dict[str, Any]) -> Tuple:
         (o["face"], o["hole_id"], bool(o.get("mandatory", True)))
         for o in rule.get("expected_outputs") or []
     ))
-    return (rule.get("logic"), outs)
+    return (rule.get("logic"), normalize_execution(rule.get("execution")), outs)
 
 
 def diff_rules(
@@ -661,6 +679,9 @@ def diff_rules(
         guided_after=guided_step_count(new_rules, available_faces),
         old_count=len(list(old_rules or [])),
         new_count=len(new_idx),
+        manual_count=sum(
+            1 for rule in new_idx.values() if rule.get("execution") == "manual"
+        ),
     )
 
 
@@ -668,6 +689,10 @@ def format_diff(diff: RulesDiff) -> str:
     lines = [
         f"This replaces {diff.old_count} working rules with {diff.new_count} unique connections.",
         f"Guided steps now: {diff.guided_after} (was {diff.guided_before}).",
+        (
+            f"Manual checks: {diff.manual_count}. "
+            "They run after the automatic holes. Pass or Fail, no timer."
+        ),
     ]
     if diff.merged_from_rows:
         lines.append(
@@ -816,6 +841,11 @@ def _rows_from_table(headers: Sequence[str], data_rows: Sequence[Sequence[Any]])
         raw_out_hole = _cell(row, mapped["output_hole"])
         mandatory = _truthy(_cell(row, mapped.get("mandatory"))) if "mandatory" in mapped else True
         logic = _logic(_cell(row, mapped.get("logic"))) if "logic" in mapped else DEFAULT_LOGIC
+        execution = (
+            normalize_execution(_cell(row, mapped["execution"]))
+            if "execution" in mapped
+            else "auto"
+        )
         extra_exits: List[Tuple[str, str]] = []
         for light_n, fcol, hcol in extras:
             oface = _cell(row, fcol)
@@ -880,6 +910,7 @@ def _rows_from_table(headers: Sequence[str], data_rows: Sequence[Sequence[Any]])
                 mandatory=mandatory,
                 logic=logic,
                 source_row=n,
+                execution=execution,
             ))
     return parsed
 
@@ -926,7 +957,9 @@ def parse_xlsx_file(path: str) -> SpreadsheetParse:
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     sheet = None
     for name in wb.sheetnames:
-        if name.strip().lower() in {"rules", "connectivity", "hole connections", "connections"}:
+        if name.strip().lower() in {
+            "rules", "connectivity", "hole connections", "connections", "hole open",
+        }:
             sheet = wb[name]
             break
     if sheet is None:
@@ -952,8 +985,28 @@ def _sheet_face(face: str) -> str:
     return text.replace("_", "-")
 
 
+def inspection_rows_from_rules(rules: Sequence[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """One row per insert, in the same columns as the inspection sheet."""
+    rows: List[Dict[str, str]] = []
+    for rule in uniquify_rule_ids(rules or []):
+        canon = canonical_rule(rule)
+        insert = canon["input"]["hole_id"]
+        if not insert:
+            continue
+        holes = [str(out.get("hole_id") or "") for out in canon["expected_outputs"]]
+        faces = [_sheet_face(str(out.get("face") or "")) for out in canon["expected_outputs"]]
+        rows.append({
+            "manual": "YES" if canon["execution"] == "manual" else "",
+            "insert": insert,
+            "insert_view": _sheet_face(canon["input"]["face"]),
+            "inspection": ", ".join(hole for hole in holes if hole),
+            "exit_view": ", ".join(face for face in faces if face),
+        })
+    return rows
+
+
 def write_connections_workbook(path: str, rules: Sequence[Dict[str, Any]]) -> str:
-    """One row per insert hole. Each light-out hole is the next pair of columns."""
+    """The inspection sheet: one row per insert, Manual, Insert Rod, View, For Inspection, View."""
     try:
         import openpyxl
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -963,94 +1016,73 @@ def write_connections_workbook(path: str, rules: Sequence[Dict[str, Any]]) -> st
             "openpyxl is not installed. pip install openpyxl"
         ) from exc
 
-    prepared: List[Tuple[Dict[str, str], List[Dict[str, Any]]]] = []
-    widest = 1
-    for rule in uniquify_rule_ids(rules):
-        canon = canonical_rule(rule)
-        inp = canon["input"]
-        outputs = list(canon["expected_outputs"])
-        if not inp.get("hole_id"):
-            continue
-        prepared.append((inp, outputs))
-        widest = max(widest, len(outputs) or 1)
-    pair_count = max(widest + 1, 4)
-
-    headers = ["Insert hole", "Insert face"]
-    for n in range(1, pair_count + 1):
-        headers.extend([f"Light {n} hole", f"Light {n} face"])
-
+    headers = ["Manual", "Insert Rod", "View", "For Inspection", "View"]
     wb = openpyxl.Workbook()
     sheet = wb.active
-    sheet.title = "Hole connections"
+    sheet.title = "HOLE OPEN"
     sheet.append(headers)
-    insert_fill = PatternFill("solid", fgColor="0E6E86")
-    light_fills = (
-        PatternFill("solid", fgColor="8A5A12"),
-        PatternFill("solid", fgColor="6E4A10"),
-    )
-    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="1F4E79")
+    header_font = Font(bold=True, color="FFFFFF", name="Calibri")
     thin = Border(
-        left=Side(style="thin", color="E4DDD0"),
-        right=Side(style="thin", color="E4DDD0"),
-        top=Side(style="thin", color="E4DDD0"),
-        bottom=Side(style="thin", color="E4DDD0"),
+        left=Side(style="thin", color="D9D9D9"),
+        right=Side(style="thin", color="D9D9D9"),
+        top=Side(style="thin", color="D9D9D9"),
+        bottom=Side(style="thin", color="D9D9D9"),
     )
+    wrap = Alignment(wrap_text=True, vertical="center")
     for col in range(1, len(headers) + 1):
         cell = sheet.cell(1, col)
         cell.font = header_font
+        cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = thin
-        if col <= 2:
-            cell.fill = insert_fill
-        else:
-            pair = (col - 3) // 2
-            cell.fill = light_fills[pair % 2]
-    sheet.row_dimensions[1].height = 32
-    sheet.freeze_panes = "C2"
+    sheet.row_dimensions[1].height = 22
+    sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
 
-    zebra = PatternFill("solid", fgColor="F7F4EE")
-    for row_i, (inp, outputs) in enumerate(prepared, start=2):
-        values: List[str] = [inp["hole_id"], _sheet_face(inp["face"])]
-        for n in range(pair_count):
-            if n < len(outputs):
-                values.append(str(outputs[n].get("hole_id") or ""))
-                values.append(_sheet_face(str(outputs[n].get("face") or "")))
-            else:
-                values.extend(["", ""])
+    manual_fill = PatternFill("solid", fgColor="FCE4D6")
+    for row_i, item in enumerate(inspection_rows_from_rules(rules), start=2):
+        values = [
+            item["manual"],
+            item["insert"],
+            item["insert_view"],
+            item["inspection"],
+            item["exit_view"],
+        ]
         sheet.append(values)
         for col in range(1, len(headers) + 1):
             cell = sheet.cell(row_i, col)
             cell.border = thin
-            cell.alignment = Alignment(vertical="center")
-            if row_i % 2 == 0:
-                cell.fill = zebra
-            if col <= 2:
-                cell.font = Font(bold=True)
+            cell.alignment = wrap
+            cell.font = Font(name="Calibri", size=11)
+        if item["manual"] == "YES":
+            sheet.cell(row_i, 1).fill = manual_fill
 
-    sheet.column_dimensions["A"].width = 28
-    sheet.column_dimensions["B"].width = 14
-    for col in range(3, len(headers) + 1):
-        letter = get_column_letter(col)
-        sheet.column_dimensions[letter].width = 28 if col % 2 == 1 else 14
+    widths = [12, 36, 16, 54, 18]
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
 
-    how = wb.create_sheet("How to fill")
-    how["A1"] = "Hole connections"
-    how["A1"].font = Font(bold=True, size=16)
+    how = wb.create_sheet("HOW TO FILL")
+    how["A1"] = "Standard manifold inspection sheet"
+    how["A1"].font = Font(bold=True, size=16, name="Calibri")
     lines = [
-        "Each row is one hole the laser goes into.",
-        "Insert hole and Insert face name that hole and the camera that sees it.",
-        "Light 1 hole and Light 1 face are the first place the light should appear.",
-        "Light 2 is the next place, on the same row. Light 3 is the one after that.",
-        "Leave a Light pair blank when you do not need it.",
-        "A face is one letter, such as B. Use A-F or C-F when that hole is on both cameras.",
-        "Type one hole name in each cell. Do not put several holes in one cell.",
-        "Example: laser into A14 on A-F. Light appears at SEC. M-M on B, then at A13 on B.",
-        "That row is: Insert hole A14, Insert face A-F, Light 1 hole SEC. M-M, Light 1 face B, Light 2 hole A13, Light 2 face B.",
-        "Save this file, then in the app choose Load spreadsheet.",
+        "Use the HOLE OPEN sheet. One row is one hole the rod goes into.",
+        "Insert Rod is the hole name. The first View is the camera face (A, or C-F when both cameras see it).",
+        "For Inspection lists every hole that must light, separated by commas.",
+        "The second View lists the face for each of those holes, in the same order, separated by commas.",
+        "If one face covers every hole in the list, write that face once.",
+        "Manual: write YES to run that hole at the end. The operator presses Pass or Fail. There is no timer.",
+        "Leave Manual blank and the cameras decide.",
+        "Do not add LENGTH rows or a Mock Up column. Those are not rules.",
+        "Section holes are written SEC. T1-T1 — SEC, a full stop, a space, then the section. ALL CAPS.",
+        "Example: Insert Rod A14, View A-F, For Inspection SEC. M-M, A13, View B, B.",
+        "A new manifold starts from a blank copy of this workbook plus an empty rules file.",
+        "In the app: Hole connections, Load spreadsheet, tick Manual where needed, then Save.",
     ]
-    for i, line in enumerate(lines, start=3):
-        how.cell(i, 1, line)
+    for index, line in enumerate(lines, start=3):
+        how.cell(index, 1, line)
+        how.cell(index, 1).font = Font(name="Calibri", size=12)
+        how.cell(index, 1).alignment = Alignment(wrap_text=True, vertical="center")
     how.column_dimensions["A"].width = 120
 
     path = os.path.abspath(path)
@@ -1109,6 +1141,27 @@ def without_conflicting_inputs(
     return kept, notes
 
 
+def carry_manual_checks(
+    previous: Sequence[Dict[str, Any]],
+    incoming: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Keep a manual mark when the same insert face and hole are still present."""
+    manual_keys = {
+        (canon["input"]["face"], canon["input"]["hole_id"])
+        for rule in previous or []
+        for canon in [canonical_rule(rule)]
+        if canon["execution"] == "manual" and canon["input"]["face"] and canon["input"]["hole_id"]
+    }
+    kept: List[Dict[str, Any]] = []
+    for rule in incoming or []:
+        canon = canonical_rule(rule)
+        key = (canon["input"]["face"], canon["input"]["hole_id"])
+        if key in manual_keys:
+            canon["execution"] = "manual"
+        kept.append(canon)
+    return kept
+
+
 def rules_from_spreadsheet(path: str) -> Tuple[List[Dict[str, Any]], SpreadsheetParse]:
     parsed = parse_spreadsheet(path)
     if parsed.errors and not parsed.rows:
@@ -1118,3 +1171,39 @@ def rules_from_spreadsheet(path: str) -> Tuple[List[Dict[str, Any]], Spreadsheet
     parsed.errors.extend(notes)
     rules = merge_connection_rows(kept)
     return rules, parsed
+
+
+INSPECTION_WORKBOOK_NAME = "manifold_inspection.xlsx"
+TEMPLATE_DIR_NAME = "template"
+
+
+def template_workbook_path(config_dir: str) -> str:
+    return os.path.join(os.path.abspath(config_dir), TEMPLATE_DIR_NAME, INSPECTION_WORKBOOK_NAME)
+
+
+def ensure_standard_template(config_dir: str) -> str:
+    """The one blank HOLE OPEN workbook every new manifold is copied from."""
+    path = template_workbook_path(config_dir)
+    if not os.path.isfile(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_connections_workbook(path, [])
+    return path
+
+
+def write_rules_from_workbook(workbook_path: str, rules_path: str) -> int:
+    """Build connectivity_rules.json from an inspection sheet. The sheet is the source."""
+    rules, parsed = rules_from_spreadsheet(workbook_path)
+    blocking = [err for err in parsed.errors if parsed.rows or "Could not map" in err]
+    if blocking and not rules:
+        raise ValueError("\n".join(parsed.errors) or "The inspection sheet has no usable rows.")
+    save_rules_atomic(rules_path, rules, backup=os.path.isfile(rules_path))
+    return len(rules)
+
+
+def inject_inspection_template(dest_dir: str, config_dir: str) -> int:
+    """Copy the standard sheet into a manifold folder and write its rules file."""
+    src = ensure_standard_template(config_dir)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_sheet = os.path.join(dest_dir, INSPECTION_WORKBOOK_NAME)
+    shutil.copy2(src, dest_sheet)
+    return write_rules_from_workbook(dest_sheet, os.path.join(dest_dir, "connectivity_rules.json"))

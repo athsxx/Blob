@@ -729,7 +729,9 @@ class StepListPanel(QFrame):
             icon.setStyleSheet("color: #8a8580; font-size: 12px; min-width: 14px;")
             icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            text = QLabel(f"{num:02d}.  {_face_label(face)} · {hole}")
+            manual = str(step.get("execution") or "auto") == "manual"
+            suffix = "   manual" if manual else ""
+            text = QLabel(f"{num:02d}.  {_face_label(face)} · {hole}{suffix}")
             text.setStyleSheet("color: #5c6158; font-size: 11px;")
 
             rl.addWidget(icon)
@@ -782,8 +784,80 @@ class StepListPanel(QFrame):
 # InstructionPanel  (center column)
 # ──────────────────────────────────────────────
 
+class ManualCheckDialog(QDialog):
+    """Pass or Fail for one hole. Closing it does not decide the hole."""
+
+    sig_result = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Manual check")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        self.setStyleSheet(APP_STYLESHEET)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        self._chosen = False
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        title = QLabel("Manual check")
+        title.setObjectName("pageTitleMain")
+        layout.addWidget(title)
+        self.body = QLabel("")
+        self.body.setWordWrap(True)
+        self.body.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self.body)
+        note = QLabel("Pass or Fail. There is no timer.")
+        note.setWordWrap(True)
+        note.setObjectName("pageHint")
+        layout.addWidget(note)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.btn_pass = QPushButton("Pass")
+        self.btn_pass.setObjectName("pagePrimary")
+        self.btn_fail = QPushButton("Fail")
+        self.btn_fail.setObjectName("pageSecondary")
+        self.btn_pass.clicked.connect(lambda: self._choose("PASS"))
+        self.btn_fail.clicked.connect(lambda: self._choose("FAIL"))
+        row.addWidget(self.btn_fail)
+        row.addWidget(self.btn_pass)
+        layout.addLayout(row)
+
+    def set_step(self, step: Dict) -> None:
+        face = _face_label(step.get("input_face", ""))
+        hole = step.get("input_hole", "")
+        outs = step.get("expected_outputs") or []
+        lights = "<br>".join(
+            f"{_face_label(out.get('face', ''))} · {out.get('hole_id', '')}"
+            for out in outs
+        ) or "No light-out hole"
+        self.body.setText(
+            f"<b>Insert</b> {face} · {hole}<br><b>Light should appear at</b><br>{lights}"
+        )
+        self.btn_pass.setEnabled(True)
+        self.btn_fail.setEnabled(True)
+        self._chosen = False
+
+    def _choose(self, result: str) -> None:
+        if self._chosen:
+            return
+        self._chosen = True
+        self.btn_pass.setEnabled(False)
+        self.btn_fail.setEnabled(False)
+        self.sig_result.emit(result)
+        self.accept()
+
+    def closeEvent(self, event) -> None:
+        if not self._chosen:
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+
 class InstructionPanel(QFrame):
     """Large operator instruction: what to insert and what to expect."""
+
+    sig_manual_result = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -884,6 +958,22 @@ class InstructionPanel(QFrame):
         self.monitor_bar.hide()
         layout.addWidget(self.monitor_bar)
 
+        manual_row = QHBoxLayout()
+        manual_row.setSpacing(8)
+        manual_row.addStretch(1)
+        self.btn_manual_fail = QPushButton("Fail")
+        self.btn_manual_fail.setObjectName("pageSecondary")
+        self.btn_manual_pass = QPushButton("Pass")
+        self.btn_manual_pass.setObjectName("pagePrimary")
+        self.btn_manual_fail.clicked.connect(lambda: self.sig_manual_result.emit("FAIL"))
+        self.btn_manual_pass.clicked.connect(lambda: self.sig_manual_result.emit("PASS"))
+        self.btn_manual_fail.hide()
+        self.btn_manual_pass.hide()
+        manual_row.addWidget(self.btn_manual_fail)
+        manual_row.addWidget(self.btn_manual_pass)
+        manual_row.addStretch(1)
+        layout.addLayout(manual_row)
+
         layout.addSpacing(6)
 
         # Pass / Fail counters
@@ -916,6 +1006,7 @@ class InstructionPanel(QFrame):
         self._pass_total = 0
         self._fail_total = 0
         self._out_labels: List[QLabel] = []
+        self._current_manual = False
 
     # ── Public API ──────────────────────────────
 
@@ -933,27 +1024,53 @@ class InstructionPanel(QFrame):
             lbl.deleteLater()
         self._out_labels.clear()
         self.tree_lbl.setText(_step_tree(face, hole, outs))
+        self._current_manual = str(step.get("execution") or "auto") == "manual"
+        if self._current_manual:
+            self._show_manual_waiting()
+        else:
+            self.set_waiting()
 
-        self.set_waiting()
+    def _hide_manual_buttons(self) -> None:
+        self.btn_manual_pass.hide()
+        self.btn_manual_fail.hide()
 
     def set_waiting(self):
+        self._hide_manual_buttons()
         self.status_lbl.setText("⏸  WAITING FOR LASER")
         self.status_lbl.setStyleSheet("color: #5c6158; font-size: 22px; font-weight: bold;")
         self.monitor_bar.hide()
         self.monitor_bar.setValue(0)
+        self.countdown_lbl.show()
         self.countdown_lbl.setText("Time Left: 60s")
         self.countdown_lbl.setStyleSheet("color: #5c6158; font-size: 14px; font-weight: bold;")
         self.timeout_bar.show()
         self.timeout_bar.setValue(600)
         self._update_timeout_bar_color(60)
 
+    def _show_manual_waiting(self) -> None:
+        self._hide_manual_buttons()
+        self.status_lbl.setText("MANUAL CHECK")
+        self.status_lbl.setStyleSheet("color: #0e2742; font-size: 22px; font-weight: bold;")
+        self.monitor_bar.hide()
+        self.monitor_bar.setValue(0)
+        self.countdown_lbl.hide()
+        self.countdown_lbl.setText("")
+        self.timeout_bar.hide()
+
+    def reveal_manual_actions(self, show: bool) -> None:
+        self._hide_manual_buttons()
+
     def set_monitoring(self, pct: int = 0):
+        if self._current_manual:
+            self.monitor_bar.hide()
+            return
         self.status_lbl.setText("⏱  MONITORING...")
         self.status_lbl.setStyleSheet("color: #810055; font-size: 22px; font-weight: bold;")
         self.monitor_bar.show()
         self.monitor_bar.setValue(pct)
 
     def set_pass(self):
+        self._hide_manual_buttons()
         self.status_lbl.setText("✓  PASS")
         self.status_lbl.setStyleSheet("color: #2f6b45; font-size: 28px; font-weight: bold;")
         self.monitor_bar.hide()
@@ -963,6 +1080,7 @@ class InstructionPanel(QFrame):
         self.pass_count.setText(str(self._pass_total))
 
     def set_fail(self):
+        self._hide_manual_buttons()
         self.status_lbl.setText("✗  FAIL")
         self.status_lbl.setStyleSheet("color: #9b2e22; font-size: 28px; font-weight: bold;")
         self.monitor_bar.hide()
@@ -973,6 +1091,8 @@ class InstructionPanel(QFrame):
 
     def set_countdown(self, seconds_remaining: int):
         """Update the countdown label and progress bar."""
+        if self._current_manual:
+            return
         self.countdown_lbl.setText(f"Time Left: {seconds_remaining}s")
         self.timeout_bar.setValue(seconds_remaining * 10)
         self._update_timeout_bar_color(seconds_remaining)
@@ -1391,8 +1511,8 @@ class ManifoldSelectionPage(QWidget):
         body_layout.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
 
         poc_note = QLabel(
-            "Creates a config folder on disk, copies connectivity rules from a template, "
-            "and adds empty ROI files per face. Some list entries can still share one folder (see manifolds_registry.json)."
+            "Creates a folder with a blank inspection sheet, an empty rules file, "
+            "and empty hole files for faces A–F. You can copy an existing manifold instead."
         )
         poc_note.setWordWrap(True)
         poc_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1546,6 +1666,7 @@ class DashboardWindow(QMainWindow):
     sig_pause    = pyqtSignal()
     sig_resume   = pyqtSignal()
     sig_override = pyqtSignal(str, str)
+    sig_manual_result = pyqtSignal(str, str)
     sig_mode_selected = pyqtSignal(str)
     sig_manifold_selected = pyqtSignal(str)
     sig_reload_rules = pyqtSignal()
@@ -1597,6 +1718,9 @@ class DashboardWindow(QMainWindow):
         self._rule_ids: list = []
         self._guided_sequence: List[Dict] = []
         self._current_step_index: int = 0
+        self._inspection_running = False
+        self._manual_latched = False
+        self._manual_dialog: Optional[ManualCheckDialog] = None
 
         self.selected_manifold = None
         self.selected_mode = None
@@ -1765,6 +1889,7 @@ class DashboardWindow(QMainWindow):
         # CENTER — instruction panel (narrower)
         self.instruction_panel = InstructionPanel()
         self.instruction_panel.setFixedWidth(320)
+        self.instruction_panel.sig_manual_result.connect(self._on_manual_choice)
         body_layout.addWidget(self.instruction_panel)
 
         # RIGHT — six equal camera tiles. Size is preview only.
@@ -2234,6 +2359,8 @@ class DashboardWindow(QMainWindow):
 
     def enter_start_screen(self) -> None:
         """Show Sequential / Manual. Cameras must already be stopped."""
+        self._inspection_running = False
+        self.dismiss_manual_check()
         self._handshake_active = False
         self._cameras_ready = False
         self._roi_session_open = False
@@ -2417,6 +2544,41 @@ class DashboardWindow(QMainWindow):
                 cw.set_target_label(" | ".join(parts), role=role)
             self._tell_workers_highlights(inputs_by_face, outputs_by_face)
 
+    def present_manual_check(self) -> None:
+        """Show Pass/Fail for the current hole. Only while inspection is running."""
+        if not self._inspection_running or not self._guided_sequence:
+            return
+        step = self._guided_sequence[self._current_step_index]
+        if str(step.get("execution") or "auto") != "manual":
+            return
+        self._manual_latched = False
+        self.instruction_panel.reveal_manual_actions(False)
+        if self._manual_dialog is None:
+            self._manual_dialog = ManualCheckDialog(self)
+            self._manual_dialog.sig_result.connect(self._on_manual_choice)
+        self._manual_dialog.set_step(step)
+        self._manual_dialog.exec()
+
+    def dismiss_manual_check(self) -> None:
+        self.instruction_panel.reveal_manual_actions(False)
+        if self._manual_dialog is not None:
+            self._manual_dialog.hide()
+
+    def _on_manual_choice(self, result: str) -> None:
+        if self._manual_latched or not self._inspection_running:
+            return
+        if not self._guided_sequence:
+            return
+        step = self._guided_sequence[self._current_step_index]
+        if str(step.get("execution") or "auto") != "manual":
+            return
+        rule_id = str(step.get("rule_id") or "")
+        if not rule_id or result not in {"PASS", "FAIL"}:
+            return
+        self._manual_latched = True
+        self.dismiss_manual_check()
+        self.sig_manual_result.emit(rule_id, result)
+
     def update_step_result(self, step_index: int, passed: bool):
         if step_index < 0 or not self._guided_sequence or step_index >= len(self._guided_sequence):
             return
@@ -2475,6 +2637,7 @@ class DashboardWindow(QMainWindow):
                 "Wait until cameras have finished opening.",
             )
             return
+        self._inspection_running = True
         self.sig_start.emit()
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -2521,6 +2684,8 @@ class DashboardWindow(QMainWindow):
         self._tell_workers_highlights({}, {})
 
     def _on_stop(self):
+        self._inspection_running = False
+        self.dismiss_manual_check()
         self._clear_hole_highlights()
         self.sig_stop.emit()
         self.btn_start.setEnabled(self._cameras_ready)
