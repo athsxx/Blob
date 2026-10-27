@@ -28,20 +28,20 @@ Every later shift: mode → manifold if needed → live → START.
 
 ## Excel ingest
 
-The DALIA workbook is `config/DALIA/dalia_manifold_inspection.xlsx`. Rules in `connectivity_rules.json` come from that sheet. Hole ROI files are empty until the shop floor places ellipses. Do not invent hole pixel positions. T-T and Z-Z counters, and the Face E insert `C2, C3`, are not in the rules until they are named.
+The DALIA workbook is `config/DALIA/dalia_manifold_inspection.xlsx`, sheet `HOLE OPEN`. Rules in `connectivity_rules.json` come from the connection rows. Length rows and the Mock Up column are not rules. Hole ids are the sheet words in ALL CAPS, sections as `SEC. T1-T1`. Numbered T and Z holes stay numbered. Do not invent hole pixel positions.
 
 A face written `C-F`, `A-F`, `A-E`, or `B-C` is one hole visible on both cameras. Light on either camera counts. A shorter face list means the last face covers the remaining holes.
 
 Linked path (no loose ends):
 
-- `src/connectivity_rules_io.py` — parse xlsx/csv, header aliases, hole-id normalize (`SEC_P_P`, `CENTRE_HOLE`, output faces like `C_F`), merge rows into rules, diff, atomic save.
+- `src/connectivity_rules_io.py` — parse xlsx/csv, header aliases, hole-id normalize (`SEC. P-P`, `CENTRE HOLE`, output faces like `C_F`), merge rows into rules, diff, atomic save.
 - `src/rule_editor_ui.py` — Hole connections dialog. Load spreadsheet. Not PIN-gated.
 - `requirements.txt` — `openpyxl`.
 - `src/config_loader.py` — `hole_ids_for_face` and `save_rules` delegate to the io module.
 - Dashboard camera-setup page button **Hole connections** opens `RuleEditorDialog` for the manifold just selected.
 - `NAMING_CONVENTION.md` — hole ids in ROI `name` must match rule `hole_id` or every step fails.
 
-Existing data: `config/DALIA/connectivity_rules.json` is generated from the workbook. `hole_positions_cam0`–`cam5` have empty `circles` until ROIs are placed. Inspection will not start if the rules file is missing or empty. Empty Face F does not bring setup back.
+Existing data: `config/DALIA/connectivity_rules.json` is generated from the HOLE OPEN sheet. `hole_positions_cam0`–`cam5` already contain ellipses under the previous hole names. Do not overwrite those coordinates from the new sheet. A new section name has no ellipse until the shop floor places or renames it. Inspection will not start if the rules file is missing or empty. Empty Face F does not bring setup back.
 
 ## History that must not be redone
 

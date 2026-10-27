@@ -1,10 +1,12 @@
 """
 Normalize, validate, merge, diff, and save connectivity_rules.json.
 
-The DALIA inspection workbook uses Insert / Input View / Open To Check /
-Output View. A hyphenated face such as C-F is one hole visible on both
-cameras. Both the type-in editor and the spreadsheet path write the same
-JSON contract that LogicEngine.load_rules already understands.
+The DALIA inspection workbook is the HOLE OPEN sheet: Insert Rod, View,
+For Inspection, View. Length rows and the Mock Up column are shop notes.
+A hyphenated face such as C-F is one hole visible on both cameras. Hole
+ids keep the sheet's words: ALL CAPS, sections as ``SEC. T1-T1``. Both
+the type-in editor and the spreadsheet path write the same JSON contract
+that LogicEngine.load_rules already understands.
 """
 from __future__ import annotations
 
@@ -28,22 +30,70 @@ OUTPUT_FACE_CHOICES = [
     "C_F", "A_F", "A_E", "A___E", "B_C", "B_OR_D",
 ]
 
-# After spaces/hyphens → underscore. Keys are uppercased alias keys.
-_HOLE_ALIASES = {
-    "SEC_P_P": "SEC_P_P",
-    "P_P": "SEC_P_P",
-    "SEC_M_M": "SEC_M_M",
-    "M_M": "SEC_M_M",
-    "SEC_N_N": "SEC_N_N",
-    "N_N": "SEC_N_N",
-    "SEC_Z_Z": "SEC_Z_Z",
-    "Z_Z": "SEC_Z_Z",
-    "SEC_T_T": "SEC_T_T",
-    "T_T": "SEC_T_T",
-    "SEC_JK_JK": "SEC_JK_JK",
-    "JK_JK": "SEC_JK_JK",
-    "CENTRE_HOLE": "CENTRE_HOLE",
-    "CENTER_HOLE": "CENTRE_HOLE",
+# Section body after "SEC." is removed and spaces around hyphens are closed.
+# Numbered sections stay numbered. Generic T-T and Z-Z are not holes.
+_SECTION_BODY = {
+    "M-M": "SEC. M-M",
+    "M-M COUNTER": "SEC. M-M COUNTER",
+    "M1-M1": "SEC. M1-M1",
+    "N-N": "SEC. N-N",
+    "N1-N1": "SEC. N1-N1",
+    "P-P": "SEC. P-P",
+    "JK-JK": "SEC. JK-JK",
+    "T1-T1": "SEC. T1-T1",
+    "T2-T2": "SEC. T2-T2",
+    "T3-T3 COUNTER": "SEC. T3-T3 COUNTER",
+    "T4-T4 COUNTER": "SEC. T4-T4 COUNTER",
+    "T-T CENTRE": "SEC. T-T CENTRE",
+    "T-T CENTRE COUNTER": "SEC. T-T CENTRE",
+    "Z-Z CENTRE": "SEC. Z-Z CENTRE",
+    "Z1-Z1": "SEC. Z1-Z1",
+    "Z1-Z1 COUNTER": "SEC. Z4-Z4 COUNTER",
+    "Z2-Z2": "SEC. Z2-Z2",
+    "Z3-Z3 COUNTER": "SEC. Z3-Z3 COUNTER",
+    "Z4-Z4 COUNTER": "SEC. Z4-Z4 COUNTER",
+    "Z-Z COUNTER": "SEC. Z4-Z4 COUNTER",
+}
+
+# Older rule files used underscores. These map onto the sheet form.
+# SEC_T_T and SEC_Z_Z are absent on purpose: they collapsed distinct holes.
+_LEGACY_HOLE_IDS = {
+    "SEC_M_M": "SEC. M-M",
+    "M_M": "SEC. M-M",
+    "SEC_M_M_COUNTER": "SEC. M-M COUNTER",
+    "SEC_M1_M1": "SEC. M1-M1",
+    "M1_M1": "SEC. M1-M1",
+    "SEC_N_N": "SEC. N-N",
+    "N_N": "SEC. N-N",
+    "SEC_N1_N1": "SEC. N1-N1",
+    "N1_N1": "SEC. N1-N1",
+    "SEC_P_P": "SEC. P-P",
+    "P_P": "SEC. P-P",
+    "SEC_JK_JK": "SEC. JK-JK",
+    "JK_JK": "SEC. JK-JK",
+    "SEC_T1_T1": "SEC. T1-T1",
+    "SEC_T2_T2": "SEC. T2-T2",
+    "SEC_T3_T3_COUNTER": "SEC. T3-T3 COUNTER",
+    "SEC_T4_T4_COUNTER": "SEC. T4-T4 COUNTER",
+    "SEC_T_T_CENTRE": "SEC. T-T CENTRE",
+    "SEC_T_T_CENTRE_COUNTER": "SEC. T-T CENTRE",
+    "SEC_Z_Z_CENTRE": "SEC. Z-Z CENTRE",
+    "SEC_Z1_Z1": "SEC. Z1-Z1",
+    "SEC_Z1_Z1_COUNTER": "SEC. Z4-Z4 COUNTER",
+    "SEC_Z2_Z2": "SEC. Z2-Z2",
+    "SEC_Z3_Z3_COUNTER": "SEC. Z3-Z3 COUNTER",
+    "SEC_Z4_Z4_COUNTER": "SEC. Z4-Z4 COUNTER",
+    "SEC_Z_Z_COUNTER": "SEC. Z4-Z4 COUNTER",
+    "CENTRE_HOLE": "CENTRE HOLE",
+    "CENTER_HOLE": "CENTRE HOLE",
+}
+
+# F-C and C-F are the same pair of cameras. Store one token.
+_FACE_PAIR = {
+    frozenset(("A", "E")): "A_E",
+    frozenset(("A", "F")): "A_F",
+    frozenset(("B", "C")): "B_C",
+    frozenset(("C", "F")): "C_F",
 }
 
 _HEADER_ALIASES = {
@@ -69,6 +119,7 @@ _HEADER_ALIASES = {
         "output hole", "to hole", "exit hole", "light hole",
         "output_hole", "light should appear hole", "output hole id",
         "open to check (for inspection)", "open to check",
+        "for inspection",
         "light-out hole", "light out hole",
     },
     "logic": {"logic", "and/or", "and or"},
@@ -128,22 +179,54 @@ def _nfc(text: str) -> str:
 
 
 def normalize_hole_id(raw: Any) -> str:
+    """Sheet form. Sections are ``SEC. T1-T1``. ``T1`` does not become ``T-T``."""
     text = _nfc(raw).strip()
     if not text:
         return ""
     text = text.replace("ø", "Ø").replace("Ø".lower(), "Ø")
     text = text.replace("phi", "Ø").replace("PHI", "Ø")
-    alias_key = re.sub(r"[^A-Z0-9Ø]+", "_", text.upper())
-    alias_key = re.sub(r"_+", "_", alias_key).strip("_")
-    if alias_key in _HOLE_ALIASES:
-        return _HOLE_ALIASES[alias_key]
-    return alias_key
+    text = " ".join(text.replace("\n", " ").split())
+    text = text.upper()
+    text = re.sub(r"\(\s*", "(", text)
+    text = re.sub(r"\s*\)", ")", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.replace("Ø9.14 (SR. NO. 426) - A", "Ø9.14 (SR. NO. 426 - A)")
+    if text == "Ø4 (OVAL HOLE)":
+        text = "Ø4 (OVAL HOLE) (SR. NO. 1079)"
+    if text in {"CENTRE HOLE (ANGULAR)", "CENTRE HOLE (ANGULAR) (OBLONG HOLE)"}:
+        text = "CENTRE HOLE"
+    elif "OBLONG" in text and "CENTRE HOLE" in text:
+        text = "CENTRE HOLE"
+    if text in _LEGACY_HOLE_IDS:
+        return _LEGACY_HOLE_IDS[text]
+    body = re.sub(r"^SEC\.?\s*", "", text)
+    body = re.sub(r"\s*-\s*", "-", body)
+    body = re.sub(r"\s+", " ", body).strip()
+    body = body.replace("(COUNTER)", "COUNTER")
+    body = re.sub(r"\s+", " ", body).strip()
+    if body in _SECTION_BODY:
+        return _SECTION_BODY[body]
+    return text
 
 
-def is_unnamed_counter(raw: Any) -> bool:
-    """T-T and Z-Z counters are two holes each and are not named yet."""
-    key = normalize_hole_id(raw)
-    return "COUNTER" in key and ("T_T" in key or "Z_Z" in key)
+def _is_shop_note(hole: str, out_hole: str) -> bool:
+    """Length and HOLE OPEN rows are shop notes, not connections."""
+    hole_u = _nfc(hole).upper()
+    out_u = _nfc(out_hole).strip().upper()
+    if re.search(r"\bLENGTH\b", hole_u):
+        return True
+    return out_u.startswith("HOLE OPEN")
+
+
+def _insert_for_passage(insert: str, exit_holes: Sequence[str]) -> str:
+    """The T4 row that lights SEC. P-P is SEC. T-T CENTRE, not a second T4."""
+    if (
+        insert == "SEC. T4-T4 COUNTER"
+        and "SEC. P-P" in exit_holes
+        and "B11" not in exit_holes
+    ):
+        return "SEC. T-T CENTRE"
+    return insert
 
 
 def normalize_input_face(raw: Any) -> str:
@@ -168,6 +251,9 @@ def normalize_output_face(raw: Any) -> str:
         if len(letters) == 1:
             return letters[0]
         if len(letters) >= 2:
+            pair = _FACE_PAIR.get(frozenset(letters[:2]))
+            if pair:
+                return pair
             known = f"{letters[0]}_{letters[1]}"
             or_form = f"{letters[0]}_OR_{letters[1]}"
             if known in OUTPUT_FACE_CHOICES:
@@ -665,6 +751,12 @@ def _map_headers(headers: Sequence[str]) -> Tuple[Dict[str, int], List[Tuple[int
                 break
         if matched_alias:
             continue
+        if h == "view":
+            if "input_face" not in mapped:
+                mapped["input_face"] = i
+            elif "output_face" not in mapped:
+                mapped["output_face"] = i
+            continue
         mface = _NUMBERED_FACE.match(h)
         mhole = _NUMBERED_HOLE.match(h)
         if mface:
@@ -739,6 +831,10 @@ def _rows_from_table(headers: Sequence[str], data_rows: Sequence[Sequence[Any]])
                 )
         if not raw_face and not raw_hole and not raw_out_face and not raw_out_hole and not extra_exits:
             continue
+        if _is_shop_note(raw_hole, raw_out_hole):
+            continue
+        if not raw_hole and raw_out_hole.strip().upper() in {"OPEN TO CHECK", "FOR INSPECTION"}:
+            continue
         inserts = split_cell_list(raw_hole)
         exits = pair_exit_holes_and_faces(
             split_cell_list(raw_out_hole),
@@ -769,16 +865,13 @@ def _rows_from_table(headers: Sequence[str], data_rows: Sequence[Sequence[Any]])
                 f"Row {n}: held ({raw_hole or 'blank insert'} → {raw_out_hole})"
             )
             continue
-        if is_unnamed_counter(inserts[0]) or any(
-            is_unnamed_counter(hole) for hole, _face in list(exits) + extra_exits
-        ):
-            parsed.errors.append(
-                f"Row {n}: held, unnamed counter ({inserts[0]})"
-            )
-            continue
-        input_hole = inserts[0]
         input_face = raw_face
-        for hole, face in list(exits) + extra_exits:
+        exit_pairs = list(exits) + extra_exits
+        input_hole = _insert_for_passage(
+            normalize_hole_id(inserts[0]),
+            [normalize_hole_id(hole) for hole, _face in exit_pairs],
+        )
+        for hole, face in exit_pairs:
             parsed.rows.append(ConnectionRow(
                 input_face=input_face,
                 input_hole=input_hole,
@@ -952,8 +1045,8 @@ def write_connections_workbook(path: str, rules: Sequence[Dict[str, Any]]) -> st
         "Leave a Light pair blank when you do not need it.",
         "A face is one letter, such as B. Use A-F or C-F when that hole is on both cameras.",
         "Type one hole name in each cell. Do not put several holes in one cell.",
-        "Example: laser into A14 on A-F. Light appears at SEC_M_M on B, then at A13 on B.",
-        "That row is: Insert hole A14, Insert face A-F, Light 1 hole SEC_M_M, Light 1 face B, Light 2 hole A13, Light 2 face B.",
+        "Example: laser into A14 on A-F. Light appears at SEC. M-M on B, then at A13 on B.",
+        "That row is: Insert hole A14, Insert face A-F, Light 1 hole SEC. M-M, Light 1 face B, Light 2 hole A13, Light 2 face B.",
         "Save this file, then in the app choose Load spreadsheet.",
     ]
     for i, line in enumerate(lines, start=3):
