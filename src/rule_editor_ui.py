@@ -25,7 +25,9 @@ from config_loader import manifold_folder_for_label
 from logic_engine import parse_face_to_faces
 from connectivity_rules_io import (
     ConnectionRow,
+    RoiAlignPlan,
     RulesDiff,
+    apply_roi_alignment,
     carry_manual_checks,
     diff_rules,
     format_diff,
@@ -37,6 +39,7 @@ from connectivity_rules_io import (
     normalize_input_face,
     pair_exit_holes_and_faces,
     parse_spreadsheet,
+    plan_roi_alignment,
     roi_names_by_face,
     rules_from_spreadsheet,
     save_rules_atomic,
@@ -345,13 +348,7 @@ class RuleEditorDialog(QDialog):
                 "Load spreadsheet",
                 "Some rows were skipped:\n" + "\n".join(parsed.errors[:12]),
             )
-        diff = diff_rules(
-            self._old_rules,
-            rules,
-            merged_from_rows=parsed.source_row_count,
-            roi_names=self._roi_names,
-            available_faces=self._available,
-        )
+        diff, plan = self._diff_with_roi_plan(rules, parsed.source_row_count)
         text = format_diff(diff)
         if parsed.headers:
             text = (
@@ -364,7 +361,7 @@ class RuleEditorDialog(QDialog):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self._fill_from_rules(rules)
-        self._save_rules(rules, diff)
+        self._save_rules(rules, diff, plan)
 
     def _save(self) -> None:
         if self._inspection_running:
@@ -407,25 +404,53 @@ class RuleEditorDialog(QDialog):
             )
             if go != QMessageBox.StandardButton.Save:
                 return
-        diff = diff_rules(
-            self._old_rules,
-            rules,
-            merged_from_rows=self.table.rowCount(),
-            roi_names=self._roi_names,
-            available_faces=self._available,
-        )
+        diff, plan = self._diff_with_roi_plan(rules, self.table.rowCount())
         dlg = _DryRunDialog(format_diff(diff), self._stylesheet, self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        self._save_rules(rules, diff)
+        self._save_rules(rules, diff, plan)
 
-    def _save_rules(self, rules: List[Dict[str, Any]], diff: RulesDiff) -> None:
+    def _diff_with_roi_plan(
+        self,
+        rules: List[Dict[str, Any]],
+        merged_from_rows: int,
+    ) -> tuple:
+        plan = plan_roi_alignment(self._config_dir, self._folder, rules)
+        diff = diff_rules(
+            self._old_rules,
+            rules,
+            merged_from_rows=merged_from_rows,
+            roi_names=plan.names_after,
+            available_faces=self._available,
+        )
+        diff.roi_renames = list(plan.renamed)
+        diff.roi_drops = list(plan.dropped)
+        return diff, plan
+
+    def _save_rules(
+        self,
+        rules: List[Dict[str, Any]],
+        diff: RulesDiff,
+        plan: Optional[RoiAlignPlan] = None,
+    ) -> None:
         try:
             save_rules_atomic(self._path, uniquify_rule_ids(rules), backup=True)
         except Exception as exc:
             QMessageBox.critical(self, "Hole connections", f"Could not write:\n{self._path}\n{exc}")
             return
+        if plan is None:
+            plan = plan_roi_alignment(self._config_dir, self._folder, rules)
+        try:
+            apply_roi_alignment(plan)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Hole connections",
+                f"Saved connections, but hole rings could not be updated:\n{exc}",
+            )
+            return
         self._old_rules = uniquify_rule_ids(rules)
+        self._roi_names = roi_names_by_face(self._config_dir, self._folder)
         self.saved = True
         extra = ""
         if diff.unknown_holes:

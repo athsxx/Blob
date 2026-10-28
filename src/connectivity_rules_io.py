@@ -172,9 +172,19 @@ class RulesDiff:
     old_count: int
     new_count: int
     manual_count: int = 0
+    roi_renames: List[Tuple[str, str, str]] = field(default_factory=list)
+    roi_drops: List[Tuple[str, str]] = field(default_factory=list)
 
     def is_noop(self) -> bool:
         return not self.added and not self.removed and not self.changed
+
+
+@dataclass
+class RoiAlignPlan:
+    renamed: List[Tuple[str, str, str]] = field(default_factory=list)
+    dropped: List[Tuple[str, str]] = field(default_factory=list)
+    names_after: Dict[str, Set[str]] = field(default_factory=dict)
+    writes: List[Tuple[str, Dict[str, Any]]] = field(default_factory=list)
 
 
 def _nfc(text: str) -> str:
@@ -566,6 +576,138 @@ def roi_names_by_face(config_dir: str, folder: str) -> Dict[str, Set[str]]:
     return names
 
 
+def _fold_hole_key(name: str) -> str:
+    text = _nfc(name).upper().replace("ø", "Ø")
+    text = re.sub(r"[^0-9A-ZØ]+", " ", text)
+    return " ".join(text.split())
+
+
+def _hole_tokens(name: str) -> Set[str]:
+    return set(_fold_hole_key(name).split())
+
+
+def map_roi_name_to_sheet(old: str, sheet_names: Sequence[str]) -> Optional[str]:
+    """One sheet name for an old ellipse label, or None if it is not unique."""
+    names = [str(n).strip() for n in sheet_names if str(n).strip()]
+    old = str(old or "").strip()
+    if not old:
+        return None
+    if old in names:
+        return old
+    legacy = _LEGACY_HOLE_IDS.get(old) or _LEGACY_HOLE_IDS.get(old.upper())
+    if legacy and legacy in names:
+        return legacy
+    normalized = normalize_hole_id(old)
+    if normalized and normalized in names:
+        return normalized
+    folded = _fold_hole_key(old)
+    fold_hits = [n for n in names if _fold_hole_key(n) == folded]
+    if len(fold_hits) == 1:
+        return fold_hits[0]
+    old_tokens = _hole_tokens(old)
+    if not old_tokens:
+        return None
+    subset_hits = [n for n in names if old_tokens <= _hole_tokens(n)]
+    if len(subset_hits) == 1:
+        return subset_hits[0]
+    return None
+
+
+def _align_circles_for_face(
+    circles: Sequence[Dict[str, Any]],
+    sheet_names: Sequence[str],
+) -> Tuple[List[Dict[str, Any]], List[Tuple[str, str]], List[str]]:
+    sheet = [n for n in dict.fromkeys(str(s).strip() for s in sheet_names) if n]
+    taken: Set[str] = set()
+    kept: List[Dict[str, Any]] = []
+    pending: List[Dict[str, Any]] = []
+    for circle in circles or []:
+        if not isinstance(circle, dict):
+            continue
+        name = str(circle.get("name") or circle.get("hole_id") or "").strip()
+        if name in sheet and name not in taken:
+            taken.add(name)
+            kept.append(dict(circle))
+        else:
+            pending.append(dict(circle))
+    remaining = [n for n in sheet if n not in taken]
+    renamed: List[Tuple[str, str]] = []
+    dropped: List[str] = []
+    for circle in pending:
+        name = str(circle.get("name") or circle.get("hole_id") or "").strip()
+        target = map_roi_name_to_sheet(name, remaining)
+        if not target or target in taken:
+            if name:
+                dropped.append(name)
+            continue
+        circle["name"] = target
+        if "hole_id" in circle:
+            circle["hole_id"] = target
+        kept.append(circle)
+        taken.add(target)
+        remaining = [n for n in remaining if n != target]
+        if target != name:
+            renamed.append((name, target))
+    return kept, renamed, dropped
+
+
+def plan_roi_alignment(
+    config_dir: str,
+    folder: str,
+    rules: Sequence[Dict[str, Any]],
+) -> RoiAlignPlan:
+    from config_loader import face_roi_basename
+
+    plan = RoiAlignPlan(names_after={f: set() for f in "ABCDEF"})
+    for face in "ABCDEF":
+        path = os.path.join(config_dir, folder, face_roi_basename(face))
+        sheet = hole_ids_for_face(rules, face)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        circles = data.get("circles") or []
+        if not isinstance(circles, list):
+            circles = []
+        kept, renamed, dropped = _align_circles_for_face(circles, sheet)
+        payload = dict(data)
+        payload["circles"] = kept
+        plan.writes.append((os.path.abspath(path), payload))
+        plan.names_after[face] = {
+            str(c.get("name") or c.get("hole_id") or "").strip()
+            for c in kept
+            if str(c.get("name") or c.get("hole_id") or "").strip()
+        }
+        for old, new in renamed:
+            plan.renamed.append((face, old, new))
+        for old in dropped:
+            plan.dropped.append((face, old))
+    return plan
+
+
+def apply_roi_alignment(plan: RoiAlignPlan) -> None:
+    for path, payload in plan.writes or []:
+        directory = os.path.dirname(path)
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix="rois_", suffix=".json", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, ensure_ascii=False)
+                handle.write("\n")
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+
 def unknown_holes_vs_rois(
     rules: Sequence[Dict[str, Any]],
     roi_names: Dict[str, Set[str]],
@@ -682,6 +824,8 @@ def diff_rules(
         manual_count=sum(
             1 for rule in new_idx.values() if rule.get("execution") == "manual"
         ),
+        roi_renames=[],
+        roi_drops=[],
     )
 
 
@@ -706,6 +850,20 @@ def format_diff(diff: RulesDiff) -> str:
     lines.append(f"Added ({len(diff.added)}): " + (", ".join(diff.added) or "none"))
     lines.append(f"Removed ({len(diff.removed)}): " + (", ".join(diff.removed) or "none"))
     lines.append(f"Changed ({len(diff.changed)}): " + (", ".join(diff.changed) or "none"))
+    if diff.roi_renames:
+        lines.append("")
+        lines.append("Rings renamed to sheet names:")
+        for face, old, new in diff.roi_renames[:40]:
+            lines.append(f"  Face {face}: {old} → {new}")
+        if len(diff.roi_renames) > 40:
+            lines.append(f"  … {len(diff.roi_renames) - 40} more")
+    if diff.roi_drops:
+        lines.append("")
+        lines.append("Rings dropped (not on this sheet face):")
+        for face, old in diff.roi_drops[:40]:
+            lines.append(f"  Face {face}: {old}")
+        if len(diff.roi_drops) > 40:
+            lines.append(f"  … {len(diff.roi_drops) - 40} more")
     if diff.unknown_holes:
         lines.append("")
         lines.append("Hole names with no matching ellipse on the face picture:")
