@@ -13,10 +13,8 @@ from collections import defaultdict, deque
 from typing import Any, Dict, List
 
 PROFILE_FILENAME = "capture_profile.json"
-DEFAULT_PIN = "2468"
 
 DEFAULT_PROFILE: Dict[str, Any] = {
-    "admin_pin": DEFAULT_PIN,
     "width": 1280,
     "height": 800,
     "fps": 5,
@@ -45,7 +43,7 @@ def load_capture_profile(config_dir: str) -> Dict[str, Any]:
     data["fps"] = float(data.get("fps") or 5)
     data["fourcc"] = str(data.get("fourcc") or "MJPG").upper()
     data["backend"] = str(data.get("backend") or "dshow").lower()
-    data["admin_pin"] = str(data.get("admin_pin") or DEFAULT_PIN)
+    data.pop("admin_pin", None)
     if data["width"] <= 0:
         data["width"] = 1280
     if data["height"] <= 0:

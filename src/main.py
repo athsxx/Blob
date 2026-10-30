@@ -47,6 +47,7 @@ from camera_indexer import resolve_camera_indices, check_port_map_exists, load_p
 from dashboard import create_dashboard, HAS_PYQT6
 from logic_engine import LogicEngine
 from logger import get_logger
+from voice_assistant import VoiceAssistant
 
 
 def _stop_camera_workers(processes, control_event, timeout: float = 3.0) -> None:
@@ -549,10 +550,13 @@ def main():
             LOG_UI_INTERVAL_SEC = 1.0
 
             # Connect dashboard control signals to logic engine
-            # Connect dashboard control signals to logic engine
-            
+            voice = VoiceAssistant(enabled=True)
+            if hasattr(dashboard, "sig_voice_toggled"):
+                dashboard.sig_voice_toggled.connect(voice.set_enabled)
+
             # ── Per-step timeout (60 seconds) ──
             STEP_TIMEOUT_SECS = 60
+            STEP_ADVANCE_DELAY_MS = 2800   # gives voice time to announce PASS/FAIL cleanly
             step_timeout_remaining = [0]   # mutable container for closure
             step_timed_out = [False]        # guard against double-advance
 
@@ -560,9 +564,29 @@ def main():
                 step = engine.get_current_guided_step() or {}
                 return str(step.get("execution") or "auto").strip().lower() == "manual"
 
+            def _finish_all_steps():
+                step_timer.stop()
+                if hasattr(dashboard, "dismiss_manual_check"):
+                    dashboard.dismiss_manual_check()
+                if hasattr(dashboard.instruction_panel, "set_sequence_complete"):
+                    passed_n, failed_n = dashboard.instruction_panel.set_sequence_complete()
+                else:
+                    passed_n = getattr(dashboard.instruction_panel, "_pass_total", 0)
+                    failed_n = getattr(dashboard.instruction_panel, "_fail_total", 0)
+                    dashboard.instruction_panel.status_lbl.setText("✓  ALL STEPS COMPLETE")
+                    dashboard.instruction_panel.status_lbl.setStyleSheet(
+                        "color: #2f6b45; font-size: 24px; font-weight: bold;"
+                    )
+                    dashboard.instruction_panel.countdown_lbl.setText("")
+                voice.announce_completion(passed_n, failed_n)
+
             def _arm_step_clock():
                 """Automatic holes get the 60s clock. Manual holes wait for Pass or Fail."""
                 step_timed_out[0] = False
+                current_step = engine.get_current_guided_step()
+                total_steps = len(engine._guided_sequence or [])
+                if current_step:
+                    voice.announce_step_start(current_step, total_steps)
                 if _step_is_manual():
                     step_timer.stop()
                     step_timeout_remaining[0] = 0
@@ -604,9 +628,17 @@ def main():
                     else:
                         logger.log_system("WARN", "Step timeout but no active rule id — skip override")
 
-                    if engine._guided_sequence and 0 <= step_idx < len(engine._guided_sequence):
+                    seq_len = len(engine._guided_sequence or [])
+                    if engine._guided_sequence and 0 <= step_idx < seq_len:
                         dashboard.update_step_result(step_idx, passed=False)
-                    # Advance after 2 seconds
+                    has_next = (step_idx + 1) < seq_len
+                    voice.announce_step_result(
+                        step_num=step_idx + 1,
+                        passed=False,
+                        has_next_step=has_next,
+                        timed_out=True,
+                    )
+                    # Advance after short delay
                     def _advance_after_timeout():
                         next_step = engine.advance_guided_step()
                         if next_step is not None:
@@ -614,15 +646,8 @@ def main():
                             dashboard.update_guided_step(new_idx)
                             _arm_step_clock()
                         else:
-                            step_timer.stop()
-                            if hasattr(dashboard, "dismiss_manual_check"):
-                                dashboard.dismiss_manual_check()
-                            dashboard.instruction_panel.status_lbl.setText("✓  ALL STEPS COMPLETE")
-                            dashboard.instruction_panel.status_lbl.setStyleSheet(
-                                "color: #2f6b45; font-size: 24px; font-weight: bold;"
-                            )
-                            dashboard.instruction_panel.countdown_lbl.setText("")
-                    QTimer.singleShot(2000, _advance_after_timeout)
+                            _finish_all_steps()
+                    QTimer.singleShot(STEP_ADVANCE_DELAY_MS, _advance_after_timeout)
 
             step_timer = QTimer()
             step_timer.timeout.connect(_tick_step_timer)
@@ -630,6 +655,8 @@ def main():
 
             # Control handlers with timer integration
             def _on_start():
+                if engine.guided_mode and engine._guided_sequence:
+                    engine.set_guided_step(0)
                 engine.start()
                 log_ui_throttle.clear()
                 logger.log_system("INFO", "Inspection STARTED by operator")
@@ -638,11 +665,13 @@ def main():
             def _on_stop():
                 engine.stop()
                 step_timer.stop()
+                voice.clear_pending()
                 logger.log_system("INFO", "Inspection STOPPED by operator")
 
             def _on_pause():
                 engine.pause()
                 step_timer.stop()
+                voice.clear_pending()
                 logger.log_system("INFO", "Inspection PAUSED by operator")
 
             def _on_resume():
@@ -651,6 +680,9 @@ def main():
                     step_timer.stop()
                 else:
                     step_timer.start()
+                current_step = engine.get_current_guided_step()
+                if current_step:
+                    voice.announce_step_start(current_step, len(engine._guided_sequence or []))
                 logger.log_system("INFO", "Inspection RESUMED by operator")
 
             dashboard.sig_start.connect(_on_start)
@@ -683,8 +715,17 @@ def main():
                     dashboard.update_result(eval_result.to_dict())
                 logger.log_system("INFO", f"Manual check {rule_id} → {result}")
                 step_idx = engine._guided_step_index
-                if engine._guided_sequence and 0 <= step_idx < len(engine._guided_sequence):
-                    dashboard.update_step_result(step_idx, passed=(result == "PASS"))
+                seq_len = len(engine._guided_sequence or [])
+                passed = (result == "PASS")
+                if engine._guided_sequence and 0 <= step_idx < seq_len:
+                    dashboard.update_step_result(step_idx, passed=passed)
+                has_next = (step_idx + 1) < seq_len
+                voice.announce_step_result(
+                    step_num=step_idx + 1,
+                    passed=passed,
+                    has_next_step=has_next,
+                    timed_out=False,
+                )
 
                 def _advance_manual():
                     next_step = engine.advance_guided_step()
@@ -692,16 +733,9 @@ def main():
                         dashboard.update_guided_step(engine._guided_step_index)
                         _arm_step_clock()
                     else:
-                        step_timer.stop()
-                        if hasattr(dashboard, "dismiss_manual_check"):
-                            dashboard.dismiss_manual_check()
-                        dashboard.instruction_panel.status_lbl.setText("✓  ALL STEPS COMPLETE")
-                        dashboard.instruction_panel.status_lbl.setStyleSheet(
-                            "color: #2f6b45; font-size: 24px; font-weight: bold;"
-                        )
-                        dashboard.instruction_panel.countdown_lbl.setText("")
+                        _finish_all_steps()
 
-                QTimer.singleShot(2000, _advance_manual)
+                QTimer.singleShot(STEP_ADVANCE_DELAY_MS, _advance_manual)
 
             if hasattr(dashboard, "sig_manual_result"):
                 dashboard.sig_manual_result.connect(handle_manual)
@@ -816,6 +850,14 @@ def main():
                                 # Only advance if timeout hasn't already fired for this step
                                 if not step_timed_out[0]:
                                     step_timed_out[0] = True  # prevent timeout from also advancing
+                                    seq_len = len(engine._guided_sequence or [])
+                                    has_next = (step_idx + 1) < seq_len
+                                    voice.announce_step_result(
+                                        step_num=step_idx + 1,
+                                        passed=passed,
+                                        has_next_step=has_next,
+                                        timed_out=False,
+                                    )
 
                                     # Advance to next step after a short delay
                                     def _advance_step(idx=step_idx):
@@ -825,20 +867,10 @@ def main():
                                             dashboard.update_guided_step(new_idx)
                                             _arm_step_clock()
                                         else:
-                                            step_timer.stop()
-                                            if hasattr(dashboard, "dismiss_manual_check"):
-                                                dashboard.dismiss_manual_check()
-                                            # Sequence complete
-                                            dashboard.instruction_panel.status_lbl.setText(
-                                                "✓  ALL STEPS COMPLETE"
-                                            )
-                                            dashboard.instruction_panel.status_lbl.setStyleSheet(
-                                                "color: #2f6b45; font-size: 24px; font-weight: bold;"
-                                            )
-                                            dashboard.instruction_panel.countdown_lbl.setText("")
+                                            _finish_all_steps()
 
                                     from PyQt6.QtCore import QTimer as _QTimer
-                                    _QTimer.singleShot(2000, _advance_step)
+                                    _QTimer.singleShot(STEP_ADVANCE_DELAY_MS, _advance_step)
 
 
                 except queue.Empty:
@@ -893,6 +925,10 @@ def main():
                 print("[Main] Closing cameras and returning to the start screen...")
                 logger.log_system("INFO", "Operator returned to start screen; stopping cameras")
                 try:
+                    voice.shutdown()
+                except Exception:
+                    pass
+                try:
                     engine.stop()
                 except Exception:
                     pass
@@ -912,6 +948,7 @@ def main():
             dashboard.raise_()
             dashboard.activateWindow()
             qt_app.exec()
+            voice.shutdown()
 
         except KeyboardInterrupt:
             print("\n[Main] Shutdown requested...")

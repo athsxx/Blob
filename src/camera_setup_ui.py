@@ -25,6 +25,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 
 from config_loader import face_roi_basename, manifold_data_subdirectory
+from session_overlay import SessionBusyOverlay
 
 
 class _FaceAssignScanThread(QThread):
@@ -150,7 +151,13 @@ class FaceAssignWizardDialog(QDialog):
         btn_row.addWidget(save_btn)
         root.addLayout(btn_row)
 
+        self._overlay = SessionBusyOverlay(self)
         self._start_scan()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_overlay") and self._overlay is not None:
+            self._overlay.setGeometry(self.rect())
 
     def _clear_grid(self) -> None:
         while self._grid.count():
@@ -166,20 +173,34 @@ class FaceAssignWizardDialog(QDialog):
         self._scan_btn.setEnabled(False)
         self._status.setText("Scanning USB cameras… keep other camera apps closed.")
         self._clear_grid()
+        if hasattr(self, "_overlay") and self._overlay is not None:
+            self._overlay.show_message(
+                "Scanning USB cameras",
+                "Opening each camera port one at a time. Please wait…",
+            )
         self._scan_thread = _FaceAssignScanThread(self.config_dir, parent=self)
-        self._scan_thread.progress.connect(self._status.setText)
+        self._scan_thread.progress.connect(self._on_scan_progress)
         self._scan_thread.scan_done.connect(self._on_scan_done)
         self._scan_thread.scan_failed.connect(self._on_scan_failed)
         self._scan_thread.finished.connect(self._scan_thread.deleteLater)
         self._scan_thread.start()
 
+    def _on_scan_progress(self, msg: str) -> None:
+        self._status.setText(msg)
+        if hasattr(self, "_overlay") and self._overlay is not None:
+            self._overlay.show_message("Scanning USB cameras", msg)
+
     def _on_scan_failed(self, message: str) -> None:
+        if hasattr(self, "_overlay") and self._overlay is not None:
+            self._overlay.clear()
         self._scan_btn.setEnabled(True)
         self._scan_thread = None
         self._status.setText("Scan failed.")
         QMessageBox.critical(self, "Camera scan failed", message)
 
     def _on_scan_done(self, cameras: List[Dict[str, Any]]) -> None:
+        if hasattr(self, "_overlay") and self._overlay is not None:
+            self._overlay.clear()
         self._scan_btn.setEnabled(True)
         self._scan_thread = None
         self._cameras = cameras

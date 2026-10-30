@@ -1089,6 +1089,34 @@ class InstructionPanel(QFrame):
         self._fail_total += 1
         self.fail_count.setText(str(self._fail_total))
 
+    def reset_counters(self) -> None:
+        """Reset PASS/FAIL counters when starting a fresh inspection cycle."""
+        self._pass_total = 0
+        self._fail_total = 0
+        self.pass_count.setText("0")
+        self.fail_count.setText("0")
+
+    def set_sequence_complete(self) -> tuple[int, int]:
+        """
+        Show final inspection disposition based on actual PASS/FAIL counts.
+        Returns (passed_count, failed_count).
+        """
+        self._hide_manual_buttons()
+        self.monitor_bar.hide()
+        self.timeout_bar.hide()
+        self.countdown_lbl.setText("")
+        if self._fail_total == 0:
+            self.status_lbl.setText("✓  ALL STEPS PASSED")
+            self.status_lbl.setStyleSheet(
+                "color: #2f6b45; font-size: 24px; font-weight: bold;"
+            )
+        else:
+            self.status_lbl.setText(f"✗  COMPLETE — {self._fail_total} FAILED")
+            self.status_lbl.setStyleSheet(
+                "color: #9b2e22; font-size: 22px; font-weight: bold;"
+            )
+        return self._pass_total, self._fail_total
+
     def set_countdown(self, seconds_remaining: int):
         """Update the countdown label and progress bar."""
         if self._current_manual:
@@ -1671,6 +1699,7 @@ class DashboardWindow(QMainWindow):
     sig_manifold_selected = pyqtSignal(str)
     sig_reload_rules = pyqtSignal()
     sig_return_to_setup = pyqtSignal()
+    sig_voice_toggled = pyqtSignal(bool)
 
     def __init__(self, total_rules: int = 0,
                  cameras: Optional[List[Dict[str, Any]]] = None,
@@ -1737,6 +1766,7 @@ class DashboardWindow(QMainWindow):
         self._snapshot_queue = None
         self._failed_faces: List[str] = []
         self._busy_overlay = None
+        self._voice_enabled = True
 
         # ── Central Widget & Global Layout ──
         central = QWidget()
@@ -1864,6 +1894,11 @@ class DashboardWindow(QMainWindow):
         cl.addSpacing(12)
         self.btn_override = self._make_btn("✎  OVERRIDE", "btnOverride", self._on_override, enabled=False)
         cl.addWidget(self.btn_override)
+
+        cl.addSpacing(8)
+        self.btn_voice = self._make_btn("🔊  Voice: ON", "btnSetup", self._on_toggle_voice, enabled=True)
+        self.btn_voice.setToolTip("Toggle spoken step instructions and PASS/FAIL announcements")
+        cl.addWidget(self.btn_voice)
 
         cl.addSpacing(8)
         self.btn_start_screen = self._make_btn("Start screen", "btnSetup", self._on_return_to_start, enabled=True)
@@ -2318,6 +2353,11 @@ class DashboardWindow(QMainWindow):
         self.header_status.show()
         self.clock_lbl.show()
         self.btn_start.setEnabled(False)
+        if self._busy_overlay is not None:
+            self._busy_overlay.show_message(
+                "Preparing inspection",
+                f"Loading rules and camera mapping for {manifold}…",
+            )
         from PyQt6.QtWidgets import QApplication
         QApplication.processEvents()  # Paint dashboard before main.py continues
         self.sig_manifold_selected.emit(manifold)
@@ -2638,6 +2678,10 @@ class DashboardWindow(QMainWindow):
             )
             return
         self._inspection_running = True
+        self.instruction_panel.reset_counters()
+        if self._guided_sequence:
+            self.step_list.load_sequence(self._guided_sequence)
+            self.update_guided_step(0)
         self.sig_start.emit()
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -2647,6 +2691,12 @@ class DashboardWindow(QMainWindow):
         self.state_lbl.setText("Running")
         self.header_status.setText("Running")
         self.header_status.setStyleSheet(_status_pill_qss("running"))
+
+    def _on_toggle_voice(self):
+        self._voice_enabled = not self._voice_enabled
+        label = "🔊  Voice: ON" if self._voice_enabled else "🔇  Voice: OFF"
+        self.btn_voice.setText(label)
+        self.sig_voice_toggled.emit(self._voice_enabled)
 
     def _tell_workers_highlights(
         self,

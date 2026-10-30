@@ -3,7 +3,9 @@ numpy
 PyQt6
 openpyxl
 
-# Windows-only: USB port-path fingerprinting for deterministic camera-face mapping
-# Install on Windows: pip install wmi
-# Safe to omit on macOS/Linux (camera_indexer.py degrades gracefully without it)
+# Windows-only: USB port-path fingerprinting + offline SAPI5 speech synthesis
+# Install on Windows: pip install wmi pywin32 pyttsx3
+# Safe to omit on macOS/Linux (degrades gracefully to built-in OS tools)
 wmi; sys_platform == "win32"
+pywin32; sys_platform == "win32"
+pyttsx3; sys_platform == "win32"

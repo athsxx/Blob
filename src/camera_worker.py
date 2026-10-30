@@ -26,14 +26,13 @@ def _hole_key(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
-# HSV detection settings for green laser
+# HSV detection settings for green laser (kept sensitive so faint exit light is still seen)
 GREEN_LASER_SETTINGS = {
     'hue_min': 35,
     'hue_max': 85,
     'sat_min': 40,
     'val_min': 80,
     'pixel_thresh': 8,
-    'intensity_thresh': 120,
     'dominance_ratio': 1.3,
 }
 

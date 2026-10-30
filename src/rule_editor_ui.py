@@ -5,6 +5,7 @@ import os
 from typing import Any, Dict, List, Optional, Set
 
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -23,6 +24,7 @@ from PyQt6.QtCore import Qt
 
 from config_loader import manifold_folder_for_label
 from logic_engine import parse_face_to_faces
+from session_overlay import SessionBusyOverlay
 from connectivity_rules_io import (
     ConnectionRow,
     RoiAlignPlan,
@@ -200,6 +202,12 @@ class RuleEditorDialog(QDialog):
         layout.addLayout(save_row)
 
         self._fill_from_rules(self._old_rules)
+        self._overlay = SessionBusyOverlay(self)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_overlay") and self._overlay is not None:
+            self._overlay.setGeometry(self.rect())
 
     def _hole_choices(self, face: str) -> List[str]:
         names = list(hole_ids_for_face(self._old_rules, face))
@@ -329,26 +337,37 @@ class RuleEditorDialog(QDialog):
         )
         if not path:
             return
-        parsed = parse_spreadsheet(path)
-        if parsed.errors and not parsed.rows:
-            QMessageBox.warning(
-                self,
-                "Load spreadsheet",
-                "\n".join(parsed.errors),
-            )
-            return
-        rules, parsed = rules_from_spreadsheet(path)
-        rules = carry_manual_checks(self._old_rules, rules)
-        if parsed.errors and not rules:
-            QMessageBox.warning(self, "Load spreadsheet", "\n".join(parsed.errors))
-            return
+        if hasattr(self, "_overlay") and self._overlay is not None:
+            self._overlay.show_message("Loading spreadsheet", "Parsing hole connections…")
+            QApplication.processEvents()
+        try:
+            parsed = parse_spreadsheet(path)
+            if parsed.errors and not parsed.rows:
+                if hasattr(self, "_overlay") and self._overlay is not None:
+                    self._overlay.clear()
+                QMessageBox.warning(
+                    self,
+                    "Load spreadsheet",
+                    "\n".join(parsed.errors),
+                )
+                return
+            rules, parsed = rules_from_spreadsheet(path)
+            rules = carry_manual_checks(self._old_rules, rules)
+            if parsed.errors and not rules:
+                if hasattr(self, "_overlay") and self._overlay is not None:
+                    self._overlay.clear()
+                QMessageBox.warning(self, "Load spreadsheet", "\n".join(parsed.errors))
+                return
+            diff, plan = self._diff_with_roi_plan(rules, parsed.source_row_count)
+        finally:
+            if hasattr(self, "_overlay") and self._overlay is not None:
+                self._overlay.clear()
         if parsed.errors:
             QMessageBox.information(
                 self,
                 "Load spreadsheet",
                 "Some rows were skipped:\n" + "\n".join(parsed.errors[:12]),
             )
-        diff, plan = self._diff_with_roi_plan(rules, parsed.source_row_count)
         text = format_diff(diff)
         if parsed.headers:
             text = (

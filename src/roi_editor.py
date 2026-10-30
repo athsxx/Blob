@@ -575,7 +575,8 @@ class RoiEditorDialog(QDialog):
             else:
                 self.status.setText("No live camera workers. Return to the start screen to edit ROIs.")
         else:
-            QTimer.singleShot(0, self._capture_current_face)
+            self._set_busy(True, "Capturing snapshot…", "Opening camera at locked capture size…")
+            QTimer.singleShot(50, self._capture_current_face)
 
     def _usb_index(self, face: str) -> Optional[int]:
         for cam in self._cameras:
@@ -668,6 +669,7 @@ class RoiEditorDialog(QDialog):
             return
         self._set_busy(True, "Capturing snapshot…", f"Face {face} USB {usb}. Other cameras stay closed.")
         self.status.setText(f"Opening Face {face} (USB {usb})…")
+        QApplication.processEvents()
         frame = grab_setup_snapshot(
             usb,
             self._config_dir,

@@ -265,22 +265,15 @@ class LogicEngine:
         # Per-rule state machine trackers
         self._rule_trackers: Dict[str, RuleTracker] = {}
         
-        # Rule lookup helpers
+        # rule_id -> rule dict for O(1) lookup
         self.rule_input_key: Dict[str, str] = {}  # rule_id -> "Face_HoleID"
         self.rule_by_id: Dict[str, Dict] = {}  # rule_id -> rule dict
-        
-        # Guided sequence (legacy — kept for compatibility)
-        self.target_sequence: List[str] = []  # List of unique "Face_HoleID"
-        self.face_priority = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5}
         
         # ── Guided mode ──
         self.guided_mode: bool = False
         self._guided_sequence: List[Dict] = []   # built by build_guided_sequence()
         self._guided_step_index: int = 0          # current step index
         self._active_rule_id: Optional[str] = None  # rule being evaluated now
-        
-        # Debug throttle
-        self._last_debug_print = 0.0
         
         # Load rules
         self.load_rules(rules_file)
@@ -337,12 +330,6 @@ class LogicEngine:
             
             print(f"[LogicEngine] Loaded {len(self.rules)} rules, {len(self.rules_by_input)} unique inputs")
             print(f"[LogicEngine] Stable detection window: {self.stable_window_s}s")
-            
-            # Build target sequence
-            unique_inputs = sorted(self.rules_by_input.keys(), 
-                                 key=lambda k: (self.face_priority.get(k.split('_')[0], 99), k))
-            self.target_sequence = unique_inputs
-            print(f"[LogicEngine] Built target sequence: {len(self.target_sequence)} steps")
             
             return True
             
@@ -424,17 +411,11 @@ class LogicEngine:
             return []
         self.global_state.update_from_detection(camera_result)
 
-        # Debug: print detected holes every second
-        now = time.time()
-        if now - self._last_debug_print >= 1.0:
-            detected_holes_debug = self.global_state.get_detected_holes()
-            if detected_holes_debug:
-                pass # print(f"[LogicEngine DEBUG] Detected holes: {sorted(detected_holes_debug)} | running={self._running} paused={self._paused} guided={self.guided_mode} active_rule={self._active_rule_id}")
-            self._last_debug_print = now
-
         # Don't evaluate rules if stopped or paused
         if not self._running or self._paused:
             return []
+
+        now = time.time()
 
         # ── GUIDED MODE: evaluate only the active rule ──
         if self.guided_mode:
@@ -700,16 +681,6 @@ class LogicEngine:
         """Get most recent rule evaluation."""
         if self.evaluation_history:
             return self.evaluation_history[-1]
-        return None
-        
-    def get_next_target(self) -> Optional[str]:
-        """
-        Get the next target hole ID in the sequence.
-        Returns "Face_HoleID" or None if all complete.
-        """
-        for target in self.target_sequence:
-            if target not in self.global_state.completed_targets:
-                return target
         return None
 
     # ── Guided Mode ─────────────────────────────────────────
