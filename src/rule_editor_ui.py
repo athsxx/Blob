@@ -232,6 +232,7 @@ class RuleEditorDialog(QDialog):
         )
         manual.setChecked(str(item.get("manual") or "").strip().upper() == "YES")
         manual.setEnabled(not self._inspection_running)
+        manual.pressed.connect(lambda row_idx=r: self.table.selectRow(row_idx))
         wrap = QWidget()
         wrap_layout = QHBoxLayout(wrap)
         wrap_layout.setContentsMargins(0, 0, 0, 0)
@@ -239,14 +240,31 @@ class RuleEditorDialog(QDialog):
         wrap_layout.addWidget(manual)
         wrap._manual_box = manual
         self.table.setCellWidget(r, COL_MANUAL, wrap)
-        self.table.setCellWidget(r, COL_INSERT, self._line(item.get("insert", "")))
-        self.table.setCellWidget(r, COL_INSERT_VIEW, self._line(item.get("insert_view", "A")))
-        self.table.setCellWidget(r, COL_INSPECTION, self._line(item.get("inspection", "")))
-        self.table.setCellWidget(r, COL_EXIT_VIEW, self._line(item.get("exit_view", "A")))
+        for col_idx, key, default_val in (
+            (COL_INSERT, "insert", ""),
+            (COL_INSERT_VIEW, "insert_view", "A"),
+            (COL_INSPECTION, "inspection", ""),
+            (COL_EXIT_VIEW, "exit_view", "A"),
+        ):
+            line_edit = self._line(item.get(key, default_val))
+            line_edit.selectionChanged.connect(lambda row_idx=r: self.table.selectRow(row_idx))
+            self.table.setCellWidget(r, col_idx, line_edit)
         self.table.setRowHeight(r, ROW_HEIGHT)
 
     def _remove_row(self) -> None:
         row = self.table.currentRow()
+        if row < 0:
+            fw = self.table.focusWidget()
+            for r in range(self.table.rowCount()):
+                for c in range(self.table.columnCount()):
+                    w = self.table.cellWidget(r, c)
+                    if w is not None and (w is fw or w.isAncestorOf(fw)):
+                        row = r
+                        break
+                if row >= 0:
+                    break
+        if row < 0 and self.table.rowCount() > 0:
+            row = self.table.rowCount() - 1
         if row < 0:
             return
         self.table.removeRow(row)

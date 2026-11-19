@@ -21,17 +21,48 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Set, Tuple
 
+try:
+    from connectivity_rules_io import canonical_hole_key as _canonical_hole_key, normalize_hole_id as _normalize_hole_id
+except ImportError:
+    _canonical_hole_key = None
+    _normalize_hole_id = None
+
+
 def _hole_key(value: Any) -> str:
-    """Match a rule hole to the ring name without caring about case or spaces."""
-    return str(value or "").strip().upper()
+    """Match a rule hole to the ring name without caring about case, mojibake, or aliases."""
+    if _canonical_hole_key is not None:
+        return _canonical_hole_key(value)
+    text = str(value or "").strip().upper()
+    text = text.replace("Ã˜", "Ø").replace("Ã¸", "Ø").replace("Ø", "DIA ")
+    return " ".join(text.split())
 
 
-# HSV detection settings for green laser (kept sensitive so faint exit light is still seen)
+def _clean_display_hole_id(value: Any) -> str:
+    """Repair cp1252 mojibake in hole_id strings while preserving human-readable display text."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return raw.replace("Ã˜", "Ø").replace("Ã¸", "Ø").replace("Ã\x98", "Ø")
+
+
+def _cv2_safe_text(text: str) -> str:
+    """OpenCV Hershey font only supports ASCII; render Ø as DIA so it never prints '?'."""
+    return (
+        str(text or "")
+        .replace("Ã˜", "DIA ")
+        .replace("Ã¸", "DIA ")
+        .replace("Ø", "DIA ")
+        .replace("ø", "DIA ")
+        .replace("→", "->")
+    )
+
+
+# HSV detection settings for green laser (Rejects white specular glare & 1-pixel noise)
 GREEN_LASER_SETTINGS = {
     'hue_min': 35,
     'hue_max': 85,
-    'sat_min': 40,
-    'val_min': 80,
+    'sat_min': 70,
+    'val_min': 100,
     'pixel_thresh': 8,
     'dominance_ratio': 1.3,
 }
@@ -84,7 +115,7 @@ def _frame_quality(frame: Optional[np.ndarray]) -> Tuple[str, Dict[str, float]]:
         stats["chroma_rows"] = float((row_chroma > 45).mean())
         if stats["val_mean"] < 40.0 and stats["neon"] > 0.025:
             return "corrupt_neon_dark", stats
-        if stats["neon"] > 0.12:
+        if stats["neon"] > 0.12 and stats["chroma_rows"] > 0.10:
             return "corrupt_neon", stats
         if stats["chroma_rows"] > 0.30:
             return "corrupt_chroma_stripes", stats
@@ -259,7 +290,7 @@ class CameraWorker:
         
         # Detection history for temporal stability
         self.detection_history: Dict[str, List[bool]] = {}
-        self.min_stable_frames = 3
+        self.min_stable_frames = int(self.capture_settings.get("min_stable_frames", 2))
     
     def load_rois(self) -> bool:
         """Load ROI definitions from config file."""
@@ -268,7 +299,7 @@ class CameraWorker:
             return False
         
         try:
-            with open(self.config_file, 'r') as f:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             raw_circles = data.get('circles', [])
@@ -282,13 +313,19 @@ class CameraWorker:
             for i, c in enumerate(raw_circles):
                 if isinstance(c, list):
                     # Old format: [cx, cy, r]
+                    if len(c) < 3:
+                        continue
                     name = f"H{i+1}"
-                    cx, cy, r = c
+                    cx, cy, r = c[0], c[1], c[2]
                     w, h, angle = r, r, 0
                 elif isinstance(c, dict):
                     # New format: {'name': 'A1', 'coords': [cx, cy, r], 'w': .., 'h': .., 'angle': ..}
-                    name = c.get('name', f"H{i+1}")
-                    cx, cy, r = c['coords']
+                    coords = c.get('coords') or []
+                    if len(coords) < 2:
+                        continue
+                    name = _clean_display_hole_id(c.get('name', f"H{i+1}"))
+                    cx, cy = coords[0], coords[1]
+                    r = coords[2] if len(coords) > 2 else 8
                     w = c.get('w', r)
                     h = c.get('h', r)
                     angle = c.get('angle', 0)
@@ -396,34 +433,42 @@ class CameraWorker:
         # HSV green pixel count within this ROI
         green_in_roi = cv2.bitwise_and(green_mask, mask)
         pixel_count = cv2.countNonZero(green_in_roi)
-        
-        # RGB dominance check using pre-split channels
-        g_val = g_ch[mask_bool].astype(float)
-        r_val = r_ch[mask_bool].astype(float)
-        b_val = b_ch[mask_bool].astype(float)
-        
+
+        pixel_thresh = max(1, int(settings.get('pixel_thresh', 8)))
+        dom_thresh = float(settings.get('dominance_ratio', 1.3))
+
+        # Evaluate RGB green dominance ONLY on the green-masked pixels inside the ROI
+        # so white specular glare or metallic reflections never trigger false positives.
+        green_px_bool = green_in_roi > 0
+        if np.any(green_px_bool):
+            g_val = g_ch[green_px_bool].astype(float)
+            r_val = r_ch[green_px_bool].astype(float)
+            b_val = b_ch[green_px_bool].astype(float)
+        else:
+            g_val = np.empty(0, dtype=float)
+            r_val = np.empty(0, dtype=float)
+            b_val = np.empty(0, dtype=float)
+
         max_green = float(np.max(g_val)) if len(g_val) > 0 else 0.0
-        
+
         dominance_ratio = 0.0
-        if max_green > 0:
-            max_idx = np.argmax(g_val)
-            rb_avg = (r_val[max_idx] + b_val[max_idx]) / 2.0
-            if rb_avg < 1:
-                rb_avg = 1
-            dominance_ratio = max_green / rb_avg
-        
-        has_any_green = pixel_count >= 1
-        has_bright_green = max_green >= 150
-        has_green_dominant = dominance_ratio >= 1.2
-        detected = has_any_green and (has_bright_green or has_green_dominant)
-        
-        pixel_score = min(1.0, pixel_count / (settings['pixel_thresh'] * 3))
+        if len(g_val) > 0 and max_green > 0:
+            rb_avg = np.maximum(1.0, (r_val + b_val) / 2.0)
+            ratios = g_val / rb_avg
+            dominance_ratio = float(np.max(ratios))
+
+        has_enough_green = pixel_count >= pixel_thresh
+        has_bright_green = max_green >= 130
+        has_green_dominant = dominance_ratio >= dom_thresh
+        detected = has_enough_green and has_bright_green and has_green_dominant
+
+        pixel_score = min(1.0, pixel_count / (pixel_thresh * 3))
         intensity_score = min(1.0, max_green / 255.0)
-        dominance_score = min(1.0, dominance_ratio / (settings['dominance_ratio'] * 2))
+        dominance_score = min(1.0, dominance_ratio / (dom_thresh * 2))
         confidence = (pixel_score * 0.3 + intensity_score * 0.4 + dominance_score * 0.3)
         if not detected:
             confidence = min(confidence, 0.49)
-        
+
         return detected, round(confidence, 3), pixel_count, round(max_green, 1)
     
     def connect(self) -> bool:
@@ -570,6 +615,12 @@ class CameraWorker:
                             continue
 
                         self.cap = cap
+                        if live is not None:
+                            if len(live.shape) == 2:
+                                live = cv2.cvtColor(live, cv2.COLOR_GRAY2BGR)
+                            elif live.shape[2] == 4:
+                                live = cv2.cvtColor(live, cv2.COLOR_BGRA2BGR)
+                            self._last_good = live.copy()
                         used_backend_name = name
                         used_fourcc = fourcc
                         self._used_backend_name = name
@@ -774,22 +825,18 @@ class CameraWorker:
             label = f"{prefix}{hole_id}"
             if det and det.get("laser"):
                 label += " OK"
-            cv2.putText(display, label, (cx - 20, cy - max(w, h) - 5),
+            cv2.putText(display, _cv2_safe_text(label), (cx - 20, cy - max(w, h) - 5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-        
-        # Draw camera info
-        info = f"CAM_{self.face} | FPS: {self.fps_actual:.1f} | Frame: {self.frame_count}"
-        cv2.putText(display, info, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         # Draw target indicator banner if this camera has the active target
         h_frame = display.shape[0]
         if self.highlight_inputs or self.target_hole_id:
             shown = ", ".join(sorted(self.highlight_inputs)) or str(self.target_hole_id)
-            cv2.putText(display, f"INSERT: {shown}", (10, h_frame - 15),
+            cv2.putText(display, _cv2_safe_text(f"INSERT: {shown}"), (10, h_frame - 15),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         elif self.highlight_outputs:
             shown = ", ".join(sorted(self.highlight_outputs))
-            cv2.putText(display, f"LOOK: {shown}", (10, h_frame - 15),
+            cv2.putText(display, _cv2_safe_text(f"LOOK: {shown}"), (10, h_frame - 15),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         
         return display
@@ -932,8 +979,11 @@ class CameraWorker:
                         self._last_good = frame.copy()
                         self.trace.bump("hold_refresh")
                 elif self._last_good is None:
-                    self.trace.bump("drop_no_last_good")
-                    continue
+                    if corrupt_streak < 5:
+                        self.trace.bump("drop_no_last_good")
+                        continue
+                    self._last_good = frame.copy()
+                    corrupt_streak = 0
             else:
                 if holding:
                     self.trace.emit(f"HOLD end — live OK {_fmt_stats(last_stats)}")
@@ -977,6 +1027,13 @@ class CameraWorker:
                         break
                     self._handle_command(cmd)
 
+            t_proc = time.time()
+            result = self.process_frame(frame)
+            proc_ms = (time.time() - t_proc) * 1000.0
+            if proc_ms > 80:
+                self.trace.maybe("slow_proc", f"process_frame slow {proc_ms:.0f}ms", first=3, every=20)
+            self.last_detections = result['detections']
+
             if self.display_queue:
                 try:
                     fh, fw = frame.shape[:2]
@@ -999,12 +1056,6 @@ class CameraWorker:
                 except Exception as exc:
                     self.trace.maybe("display_drop", f"display queue drop: {exc!r}", first=3, every=50)
             
-            t_proc = time.time()
-            result = self.process_frame(frame)
-            proc_ms = (time.time() - t_proc) * 1000.0
-            if proc_ms > 80:
-                self.trace.maybe("slow_proc", f"process_frame slow {proc_ms:.0f}ms", first=3, every=20)
-            self.last_detections = result['detections']
             try:
                 self.result_queue.put_nowait(result)
             except Exception as exc:

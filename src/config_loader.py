@@ -25,8 +25,6 @@ MANIFOLDS_REGISTRY_FILE = "manifolds_registry.json"
 # Shipped defaults when registry file is missing or empty
 DEFAULT_MANIFOLD_REGISTRY_ENTRIES: List[Dict[str, str]] = [
     {"label": "DALIA", "folder": "DALIA"},
-    {"label": "Manifold 2", "folder": "DALIA"},
-    {"label": "Manifold 3", "folder": "DALIA"},
 ]
 
 
@@ -163,12 +161,40 @@ def save_last_manifold(config_dir: str, manifold: str) -> None:
     save_last_session(config_dir, manifold=str(manifold).strip())
 
 
-def setup_is_complete(config_dir: str) -> bool:
-    return bool(load_last_session(config_dir).get("setup_complete"))
+def setup_is_complete(config_dir: str, manifold: Optional[str] = None) -> bool:
+    session = load_last_session(config_dir)
+    if manifold:
+        folder = manifold_folder_for_label(manifold, config_dir) or slug_manifold_folder_id(manifold)
+        completed = session.get("completed_manifolds")
+        if isinstance(completed, list):
+            if manifold in completed or folder in completed:
+                return True
+            return False
+        # Backward compatibility: if global setup_complete is True and manifold matches saved manifold
+        if session.get("setup_complete") and str(session.get("manifold") or "DALIA") == manifold:
+            return True
+        return False
+    return bool(session.get("setup_complete"))
 
 
-def mark_setup_complete(config_dir: str, complete: bool = True) -> None:
-    save_last_session(config_dir, setup_complete=bool(complete))
+def mark_setup_complete(config_dir: str, complete: bool = True, manifold: Optional[str] = None) -> None:
+    session = load_last_session(config_dir)
+    target = str(manifold or session.get("manifold") or "DALIA").strip()
+    folder = manifold_folder_for_label(target, config_dir) or slug_manifold_folder_id(target)
+    completed = list(session.get("completed_manifolds") or [])
+    if session.get("setup_complete") and "DALIA" not in completed:
+        completed.append("DALIA")
+    if complete:
+        for key in (target, folder):
+            if key and key not in completed:
+                completed.append(key)
+    else:
+        completed = [x for x in completed if x not in {target, folder}]
+    save_last_session(
+        config_dir,
+        setup_complete=bool(complete),
+        completed_manifolds=completed,
+    )
 
 
 def hole_ids_for_face(rules: List[Dict[str, Any]], face: str) -> List[str]:

@@ -45,17 +45,30 @@ def _face_label(face: str) -> str:
     return "/".join(letters) if letters else str(face or "?")
 
 
+def _clean_ui_hole(text: Any) -> str:
+    return (
+        str(text or "?")
+        .replace("Ã˜", "Ø")
+        .replace("Ã¸", "Ø")
+        .replace("Ã\x98", "Ø")
+        .strip()
+    )
+
+
 def _step_tree(face: str, hole: str, outs: List[Dict]) -> str:
     """One insert hole, then each place the light should appear, in order."""
+    hole_clean = _clean_ui_hole(hole)
     lines = [
-        f"<div style='color:#0077a8;font-weight:700;font-size:14px'>"
-        f"Laser goes into {_face_label(face)} · {hole}</div>"
+        f"<div style='color:#0077a8;font-weight:700;font-size:14px;margin-bottom:4px'>"
+        f"Laser goes into {_face_label(face)} · {hole_clean}</div>"
     ]
     for index, out in enumerate(outs, start=1):
+        out_hole = _clean_ui_hole(out.get('hole_id', '?'))
+        opt = " <span style='color:#5c6158;font-weight:400'>(optional)</span>" if not out.get("mandatory", True) else ""
         lines.append(
-            "<div style='color:#8a5a12;font-size:13px;font-weight:600'>"
+            "<div style='color:#8a5a12;font-size:13px;font-weight:600;margin-top:2px'>"
             f"Light {index}: {_face_label(out.get('face', '?'))}"
-            f" · {out.get('hole_id', '?')}</div>"
+            f" · {out_hole}{opt}</div>"
         )
     if not outs:
         lines.append("<div style='color:#8a8580;font-size:13px'>No light-out hole</div>")
@@ -78,7 +91,7 @@ try:
         QHBoxLayout, QGridLayout, QFrame, QProgressBar, QScrollArea,
         QSizePolicy, QPushButton, QDialog, QComboBox, QRadioButton,
         QButtonGroup, QDialogButtonBox, QStackedWidget, QSpinBox,
-        QCheckBox, QMessageBox, QFormLayout,
+        QCheckBox, QMessageBox, QFormLayout, QLineEdit,
     )
     from PyQt6.QtCore import Qt, QTimer, pyqtSignal, qInstallMessageHandler
     from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QPalette, QCloseEvent
@@ -236,19 +249,19 @@ QPushButton#modeActionManual, QPushButton#pageSecondary {
     background-color: #fafaf7;
     color: #0e2742;
     font-weight: 600;
-    font-size: 15px;
-    padding: 12px 16px;
+    font-size: 14px;
+    padding: 10px 14px;
     border: 1px solid #d8d3c8;
     border-radius: 4px;
-    min-height: 48px;
-    min-width: 240px;
+    min-height: 40px;
 }
+QPushButton#modeActionManual { min-width: 240px; min-height: 48px; }
 QPushButton#modeActionManual:hover, QPushButton#pageSecondary:hover {
     background-color: #ffffff;
     border-color: #810055;
     color: #0e2742;
 }
-QPushButton#pagePrimary { min-width: 200px; padding: 12px 24px; }
+QPushButton#pagePrimary { min-width: 140px; padding: 10px 18px; min-height: 40px; }
 QPushButton#pageGhost {
     background-color: transparent;
     color: #0e2742;
@@ -278,12 +291,12 @@ QComboBox#pageCombo {
     background-color: #ffffff;
     color: #0f1216;
     font-weight: 500;
-    font-size: 15px;
-    padding: 12px 16px;
+    font-size: 14px;
+    padding: 8px 12px;
     border: 1px solid #d8d3c8;
     border-radius: 4px;
     min-height: 24px;
-    min-width: 280px;
+    min-width: 160px;
 }
 QComboBox#pageCombo:hover { border-color: #8a8580; }
 QComboBox#pageCombo:focus { border-color: #810055; }
@@ -669,20 +682,34 @@ class CameraWidget(QFrame):
 # ──────────────────────────────────────────────
 
 class StepListPanel(QFrame):
-    """Scrollable checklist of all inspection steps."""
+    """Scrollable, collapsible checklist of all inspection steps."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("stepListPanel")
-        self.setFixedWidth(220)
+        self._expanded_width = 276
+        self._collapsed_width = 38
+        self._collapsed = False
+        self.setFixedWidth(self._expanded_width)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        title = QLabel("INSPECTION STEPS")
-        title.setObjectName("stepPanelTitle")
-        outer.addWidget(title)
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(10, 6, 6, 6)
+        header_row.setSpacing(4)
+        self._title_lbl = QLabel("INSPECTION STEPS")
+        self._title_lbl.setObjectName("stepPanelTitle")
+        self.btn_collapse = QPushButton("◀")
+        self.btn_collapse.setObjectName("pageGhost")
+        self.btn_collapse.setFixedSize(26, 24)
+        self.btn_collapse.setToolTip("Collapse / expand step list to give more room to cameras")
+        self.btn_collapse.setStyleSheet("padding: 0px; font-size: 11px; font-weight: bold;")
+        self.btn_collapse.clicked.connect(self.toggle_collapsed)
+        header_row.addWidget(self._title_lbl, stretch=1)
+        header_row.addWidget(self.btn_collapse)
+        outer.addLayout(header_row)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -704,6 +731,19 @@ class StepListPanel(QFrame):
         self._icons:  List[QLabel] = []
         self._current = -1
 
+    def toggle_collapsed(self) -> None:
+        self._collapsed = not self._collapsed
+        if self._collapsed:
+            self._title_lbl.hide()
+            self._scroll.hide()
+            self.btn_collapse.setText("▶")
+            self.setFixedWidth(self._collapsed_width)
+        else:
+            self.setFixedWidth(self._expanded_width)
+            self._title_lbl.show()
+            self._scroll.show()
+            self.btn_collapse.setText("◀")
+
     def load_sequence(self, sequence: List[Dict]):
         # Clear old items
         for f in self._frames:
@@ -717,21 +757,24 @@ class StepListPanel(QFrame):
         for step in sequence:
             num  = step['step_num']
             face = step['input_face']
-            hole = step['input_hole']
+            hole = _clean_ui_hole(step['input_hole'])
 
             row = QFrame()
             row.setStyleSheet("background: transparent; border-radius: 4px;")
             rl = QHBoxLayout(row)
             rl.setContentsMargins(4, 4, 4, 4)
-            rl.setSpacing(8)
+            rl.setSpacing(6)
 
             icon = QLabel("○")
             icon.setStyleSheet("color: #8a8580; font-size: 12px; min-width: 14px;")
             icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             manual = str(step.get("execution") or "auto") == "manual"
-            suffix = "   manual" if manual else ""
-            text = QLabel(f"{num:02d}.  {_face_label(face)} · {hole}{suffix}")
+            suffix = "  [M]" if manual else ""
+            full_label = f"{num:02d}.  {_face_label(face)} · {hole}{suffix}"
+            text = QLabel(full_label)
+            text.setWordWrap(True)
+            text.setToolTip(full_label)
             text.setStyleSheet("color: #5c6158; font-size: 11px;")
 
             rl.addWidget(icon)
@@ -858,6 +901,8 @@ class InstructionPanel(QFrame):
     """Large operator instruction: what to insert and what to expect."""
 
     sig_manual_result = pyqtSignal(str)
+    sig_prev_step = pyqtSignal()
+    sig_next_step = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -867,11 +912,32 @@ class InstructionPanel(QFrame):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
 
-        # Step counter
+        # Step counter + Prev / Next navigation row
+        nav_row = QHBoxLayout()
+        nav_row.setContentsMargins(0, 0, 0, 0)
+        nav_row.setSpacing(6)
+        self.btn_prev_step = QPushButton("◀ Prev")
+        self.btn_prev_step.setObjectName("btnSetup")
+        self.btn_prev_step.setFixedHeight(26)
+        self.btn_prev_step.setStyleSheet("padding: 2px 8px; font-size: 11px;")
+        self.btn_prev_step.setToolTip("Go to previous inspection step")
+        self.btn_prev_step.clicked.connect(self.sig_prev_step.emit)
+
         self.step_lbl = QLabel("STEP — / —")
         self.step_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.step_lbl.setStyleSheet("color: #5c6158; font-size: 13px; font-weight: bold;")
-        layout.addWidget(self.step_lbl)
+
+        self.btn_next_step = QPushButton("Next ▶")
+        self.btn_next_step.setObjectName("btnSetup")
+        self.btn_next_step.setFixedHeight(26)
+        self.btn_next_step.setStyleSheet("padding: 2px 8px; font-size: 11px;")
+        self.btn_next_step.setToolTip("Skip / advance to next inspection step")
+        self.btn_next_step.clicked.connect(self.sig_next_step.emit)
+
+        nav_row.addWidget(self.btn_prev_step)
+        nav_row.addWidget(self.step_lbl, stretch=1)
+        nav_row.addWidget(self.btn_next_step)
+        layout.addLayout(nav_row)
 
         _div1 = QFrame(); _div1.setFrameShape(QFrame.Shape.HLine)
         _div1.setStyleSheet("color: #d8d3c8;")
@@ -886,10 +952,10 @@ class InstructionPanel(QFrame):
         self.face_hole_lbl = QLabel("—")
         self.face_hole_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.face_hole_lbl.setWordWrap(True)
-        self.face_hole_lbl.setStyleSheet("color: #0e2742; font-size: 30px; font-weight: bold;")
+        self.face_hole_lbl.setStyleSheet("color: #0e2742; font-size: 22px; font-weight: bold;")
         layout.addWidget(self.face_hole_lbl)
 
-        layout.addSpacing(8)
+        layout.addSpacing(6)
 
         # EXPECT LIGHT AT
         lbl_expect = QLabel("EXPECT LIGHT AT:")
@@ -897,20 +963,28 @@ class InstructionPanel(QFrame):
         lbl_expect.setStyleSheet("color: #5c6158; font-size: 13px;")
         layout.addWidget(lbl_expect)
 
+        self._out_scroll = QScrollArea()
+        self._out_scroll.setWidgetResizable(True)
+        self._out_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._out_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._out_scroll.setStyleSheet("background: transparent; border: none;")
         self._out_widget = QWidget()
         self._out_widget.setStyleSheet("background: transparent;")
         self._out_layout = QVBoxLayout(self._out_widget)
-        self._out_layout.setContentsMargins(0, 0, 0, 0)
-        self._out_layout.setSpacing(4)
-        self._out_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._out_widget)
+        self._out_layout.setContentsMargins(4, 2, 4, 2)
+        self._out_layout.setSpacing(6)
         self.tree_lbl = QLabel("")
         self.tree_lbl.setWordWrap(True)
         self.tree_lbl.setTextFormat(Qt.TextFormat.RichText)
         self.tree_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.tree_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.MinimumExpanding,
+        )
         self._out_layout.addWidget(self.tree_lbl)
-
-        layout.addStretch()
+        self._out_layout.addStretch(1)
+        self._out_scroll.setWidget(self._out_widget)
+        layout.addWidget(self._out_scroll, stretch=1)
 
         _div2 = QFrame(); _div2.setFrameShape(QFrame.Shape.HLine)
         _div2.setStyleSheet("color: #d8d3c8;")
@@ -1013,7 +1087,7 @@ class InstructionPanel(QFrame):
     def show_step(self, step: Dict, total_steps: int):
         num  = step.get('step_num', '?')
         face = step.get('input_face', '?')
-        hole = step.get('input_hole', '?')
+        hole = _clean_ui_hole(step.get('input_hole', '?'))
         outs = step.get('expected_outputs', [])
 
         self.step_lbl.setText(f"STEP  {num}  of  {total_steps}")
@@ -1024,6 +1098,7 @@ class InstructionPanel(QFrame):
             lbl.deleteLater()
         self._out_labels.clear()
         self.tree_lbl.setText(_step_tree(face, hole, outs))
+        self.tree_lbl.updateGeometry()
         self._current_manual = str(step.get("execution") or "auto") == "manual"
         if self._current_manual:
             self._show_manual_waiting()
@@ -1048,7 +1123,8 @@ class InstructionPanel(QFrame):
         self._update_timeout_bar_color(60)
 
     def _show_manual_waiting(self) -> None:
-        self._hide_manual_buttons()
+        self.btn_manual_pass.show()
+        self.btn_manual_fail.show()
         self.status_lbl.setText("MANUAL CHECK")
         self.status_lbl.setStyleSheet("color: #0e2742; font-size: 22px; font-weight: bold;")
         self.monitor_bar.hide()
@@ -1058,7 +1134,11 @@ class InstructionPanel(QFrame):
         self.timeout_bar.hide()
 
     def reveal_manual_actions(self, show: bool) -> None:
-        self._hide_manual_buttons()
+        if show:
+            self.btn_manual_pass.show()
+            self.btn_manual_fail.show()
+        else:
+            self._hide_manual_buttons()
 
     def set_monitoring(self, pct: int = 0):
         if self._current_manual:
@@ -1224,6 +1304,7 @@ class ManualInspectionSetupPage(QWidget):
     """
     sig_continue = pyqtSignal()
     sig_back = pyqtSignal()
+    sig_add_manifold = pyqtSignal()
 
     def __init__(self, project_root: str, config_dir: str, parent=None):
         super().__init__(parent)
@@ -1249,7 +1330,7 @@ class ManualInspectionSetupPage(QWidget):
 
         card = QFrame()
         card.setObjectName("formCard")
-        card.setMaximumWidth(560)
+        card.setMaximumWidth(640)
         cl = QVBoxLayout(card)
         cl.setContentsMargins(24, 24, 24, 24)
         cl.setSpacing(16)
@@ -1261,19 +1342,21 @@ class ManualInspectionSetupPage(QWidget):
 
         self.combo_manifold = QComboBox()
         self.combo_manifold.setObjectName("pageCombo")
-        self.combo_manifold.setMinimumWidth(360)
+        self.combo_manifold.setMinimumWidth(340)
         self.combo_manifold.currentTextChanged.connect(self._on_manifold_changed)
 
         self.combo_face = QComboBox()
         self.combo_face.setObjectName("pageCombo")
-        self.combo_face.setMinimumWidth(360)
+        self.combo_face.setMinimumWidth(340)
         for f in "ABCDEF":
             self.combo_face.addItem(f"Face {f}", userData=f)
         self.combo_face.currentIndexChanged.connect(self._refill_rules_combo)
 
         self.combo_rule = QComboBox()
         self.combo_rule.setObjectName("pageCombo")
-        self.combo_rule.setMinimumWidth(360)
+        self.combo_rule.setMinimumWidth(340)
+        self.combo_rule.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_rule.setMinimumContentsLength(24)
 
         lb_m = QLabel("Manifold")
         lb_m.setObjectName("formLabel")
@@ -1284,7 +1367,31 @@ class ManualInspectionSetupPage(QWidget):
         form.addRow(lb_m, self.combo_manifold)
         form.addRow(lb_f, self.combo_face)
         form.addRow(lb_r, self.combo_rule)
+
+        self.edit_item_code = QLineEdit()
+        self.edit_item_code.setPlaceholderText("e.g. IC-2045")
+        self.edit_prod_no = QLineEdit()
+        self.edit_prod_no.setPlaceholderText("e.g. PN-2026-019")
+        self.edit_salary_code = QLineEdit()
+        self.edit_salary_code.setPlaceholderText("e.g. EMP-1042")
+        for ed in (self.edit_item_code, self.edit_prod_no, self.edit_salary_code):
+            ed.setMinimumWidth(340)
+            ed.setMinimumHeight(34)
+        for lbl_txt, ed in (
+            ("Item code", self.edit_item_code),
+            ("Production no.", self.edit_prod_no),
+            ("Salary code", self.edit_salary_code),
+        ):
+            lb = QLabel(lbl_txt)
+            lb.setObjectName("formLabel")
+            form.addRow(lb, ed)
         cl.addLayout(form)
+
+        self.btn_add_manifold = QPushButton("Add new manifold…")
+        self.btn_add_manifold.setObjectName("pageSecondary")
+        self.btn_add_manifold.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_add_manifold.clicked.connect(self.sig_add_manifold.emit)
+        cl.addWidget(self.btn_add_manifold)
 
         hint = QLabel(
             "Rules are filtered by the selected face. Entries that need a camera you do not have enabled are hidden."
@@ -1362,12 +1469,13 @@ class ManualInspectionSetupPage(QWidget):
             return
         for rule in self._rules_raw:
             inp = rule.get("input") or {}
-            if inp.get("face") != face:
+            input_faces = parse_face_to_faces(str(inp.get("face", "")))
+            if face not in input_faces:
                 continue
             if rule_has_unavailable_output(rule, MANUAL_AVAILABLE_FACES):
                 continue
             rid = rule.get("rule_id", "")
-            hid = inp.get("hole_id", "")
+            hid = _clean_ui_hole(inp.get("hole_id", ""))
             self.combo_rule.addItem(f"{rid}  —  hole {hid}", userData=rid)
         if self.combo_rule.count() == 0:
             self.combo_rule.addItem("(no rules for this face)", userData=None)
@@ -1389,6 +1497,18 @@ class ManualInspectionSetupPage(QWidget):
     def get_rule_id(self) -> Optional[str]:
         return self.combo_rule.currentData()
 
+    def get_operator_metadata(self) -> Dict[str, str]:
+        return {
+            "item_code": self.edit_item_code.text().strip(),
+            "production_number": self.edit_prod_no.text().strip(),
+            "salary_code": self.edit_salary_code.text().strip(),
+        }
+
+    def set_operator_metadata(self, meta: Dict[str, str]) -> None:
+        self.edit_item_code.setText(str(meta.get("item_code") or ""))
+        self.edit_prod_no.setText(str(meta.get("production_number") or ""))
+        self.edit_salary_code.setText(str(meta.get("salary_code") or ""))
+
 
 class PreInspectionSetupPage(QWidget):
     """One-time camera setup after the manifold is chosen. Cameras are still closed."""
@@ -1408,8 +1528,8 @@ class PreInspectionSetupPage(QWidget):
         body = QWidget()
         bl = QVBoxLayout(body)
         bl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        bl.setSpacing(16)
-        bl.setContentsMargins(24, 24, 24, 24)
+        bl.setSpacing(14)
+        bl.setContentsMargins(24, 16, 24, 16)
         bl.addStretch(1)
 
         heading = QLabel("Camera setup")
@@ -1419,11 +1539,11 @@ class PreInspectionSetupPage(QWidget):
 
         card = QFrame()
         card.setObjectName("formCard")
-        card.setMinimumWidth(500)
-        card.setMaximumWidth(580)
+        card.setMinimumWidth(520)
+        card.setMaximumWidth(620)
         cvl = QVBoxLayout(card)
-        cvl.setContentsMargins(24, 24, 24, 24)
-        cvl.setSpacing(12)
+        cvl.setContentsMargins(20, 18, 20, 18)
+        cvl.setSpacing(10)
         explain = QLabel()
         explain.setObjectName("pageHint")
         explain.setWordWrap(True)
@@ -1437,17 +1557,27 @@ class PreInspectionSetupPage(QWidget):
             "2. <b>Place hole ROIs</b> — freeze one face at a time. Click the freeze first so keys work. "
             "Click to drop or move; +/- width; [ ] height; arrows rotate; a add; c copy; d delete; SPACE recapture. Save. "
             "Face A writes hole_positions_cam0.json, Face B cam1, and so on. "
-            "You can continue with some faces empty and come back later.<br><br>"
-            "3. <b>Hole connections</b> — Save spreadsheet writes one row per insert hole. "
-            "Light 1, Light 2, and Light 3 are the places the light should appear, on that same row. "
+            "Hole names are picked strictly from the inspection sheet for that face.<br><br>"
+            "3. <b>Hole connections</b> — Save spreadsheet writes one row per insert hole "
+            "(Manual, Insert Rod, View, For Inspection, View). "
             "Edit the names in Excel, then Load spreadsheet. "
             "Saving replaces connectivity rules for this manifold and keeps a backup."
         )
         cvl.addWidget(explain)
+
+        # Live ROI & Rule Readiness Summary Card
+        self.readiness_lbl = QLabel()
+        self.readiness_lbl.setWordWrap(True)
+        self.readiness_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self.readiness_lbl.setStyleSheet(
+            "background-color: #f3f1ea; border: 1px solid #d8d3c8; "
+            "border-radius: 4px; padding: 10px 12px; font-size: 12px;"
+        )
+        cvl.addWidget(self.readiness_lbl)
         bl.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
 
         actions = QVBoxLayout()
-        actions.setSpacing(12)
+        actions.setSpacing(10)
         actions.setAlignment(Qt.AlignmentFlag.AlignCenter)
         btn_assign = QPushButton("Assign camera faces")
         btn_assign.setObjectName("pageSecondary")
@@ -1486,10 +1616,52 @@ class PreInspectionSetupPage(QWidget):
         bl.addStretch(2)
         layout.addWidget(body, stretch=1)
 
+    def refresh_readiness(self, config_dir: str, manifold: str) -> None:
+        if not config_dir or not manifold:
+            self.readiness_lbl.setText("<b>ROI & Rule Readiness:</b> Select a manifold.")
+            return
+        try:
+            from connectivity_rules_io import (
+                canonical_hole_key,
+                hole_ids_for_face,
+                load_rules_file,
+                roi_names_by_face,
+                unknown_holes_vs_rois,
+            )
+            folder = manifold_folder_for_label(manifold, config_dir) or "DALIA"
+            rules_path = os.path.join(config_dir, folder, "connectivity_rules.json")
+            rules = load_rules_file(rules_path)
+            rois_by_face = roi_names_by_face(config_dir, folder)
+            missing = unknown_holes_vs_rois(rules, rois_by_face)
+            face_chips = []
+            for face in "ABCDEF":
+                req = hole_ids_for_face(rules, face)
+                drawn = rois_by_face.get(face) or set()
+                drawn_keys = {canonical_hole_key(r) for r in drawn if canonical_hole_key(r)}
+                placed_n = sum(1 for h in req if h in drawn or canonical_hole_key(h) in drawn_keys)
+                color = "#2f6b45" if placed_n >= len(req) else "#8a5a12"
+                face_chips.append(
+                    f"<span style='color:{color};font-weight:600'>Face {face}: {placed_n}/{len(req)}</span>"
+                )
+            status_color = "#2f6b45" if not missing else "#8a5a12"
+            status_txt = (
+                "✓ All required rule holes have ROIs"
+                if not missing
+                else f"⚠ {len(missing)} rule hole(s) still need ROI placement"
+            )
+            self.readiness_lbl.setText(
+                f"<b>{manifold} Readiness ({len(rules)} rules)</b> — "
+                f"<span style='color:{status_color};font-weight:600'>{status_txt}</span><br>"
+                + " &nbsp;·&nbsp; ".join(face_chips)
+            )
+        except Exception as exc:
+            self.readiness_lbl.setText(f"<b>ROI & Rule Readiness:</b> {exc}")
+
 
 class ManifoldSelectionPage(QWidget):
     """Initial landing page to select the manifold model."""
     sig_manifold_selected = pyqtSignal(str)
+    sig_open_camera_setup = pyqtSignal(str)
     sig_back = pyqtSignal()
     sig_add_manifold = pyqtSignal()
 
@@ -1531,6 +1703,29 @@ class ManifoldSelectionPage(QWidget):
         self.combo_manifold.setMinimumWidth(360)
         c_in.addWidget(fld)
         c_in.addWidget(self.combo_manifold)
+
+        meta_form = QFormLayout()
+        meta_form.setSpacing(10)
+        meta_form.setHorizontalSpacing(12)
+        meta_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.edit_item_code = QLineEdit()
+        self.edit_item_code.setPlaceholderText("e.g. IC-2045")
+        self.edit_prod_no = QLineEdit()
+        self.edit_prod_no.setPlaceholderText("e.g. PN-2026-019")
+        self.edit_salary_code = QLineEdit()
+        self.edit_salary_code.setPlaceholderText("e.g. EMP-1042")
+        for ed in (self.edit_item_code, self.edit_prod_no, self.edit_salary_code):
+            ed.setMinimumHeight(34)
+        for lbl_txt, ed in (
+            ("Item code", self.edit_item_code),
+            ("Production no.", self.edit_prod_no),
+            ("Salary code", self.edit_salary_code),
+        ):
+            lb = QLabel(lbl_txt)
+            lb.setObjectName("formLabel")
+            meta_form.addRow(lb, ed)
+        c_in.addLayout(meta_form)
+
         self.btn_add_manifold = QPushButton("Add new manifold…")
         self.btn_add_manifold.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_add_manifold.setObjectName("pageSecondary")
@@ -1550,12 +1745,19 @@ class ManifoldSelectionPage(QWidget):
         poc_note.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         body_layout.addWidget(poc_note, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.btn_start = QPushButton("Continue")
+        self.btn_start = QPushButton("Start Live Inspection")
         self.btn_start.setObjectName("pagePrimary")
         self.btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_start.setMinimumWidth(280)
         self.btn_start.clicked.connect(lambda: self.sig_manifold_selected.emit(self.combo_manifold.currentText()))
         body_layout.addWidget(self.btn_start, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.btn_setup = QPushButton("Camera & ROI Setup…")
+        self.btn_setup.setObjectName("pageSecondary")
+        self.btn_setup.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_setup.setMinimumWidth(280)
+        self.btn_setup.clicked.connect(lambda: self.sig_open_camera_setup.emit(self.combo_manifold.currentText()))
+        body_layout.addWidget(self.btn_setup, alignment=Qt.AlignmentFlag.AlignCenter)
 
         back_row = QHBoxLayout()
         back_row.addStretch()
@@ -1586,6 +1788,18 @@ class ManifoldSelectionPage(QWidget):
             self.combo_manifold.setCurrentText(cur)
         elif self.combo_manifold.count() > 0:
             self.combo_manifold.setCurrentIndex(0)
+
+    def get_operator_metadata(self) -> Dict[str, str]:
+        return {
+            "item_code": self.edit_item_code.text().strip(),
+            "production_number": self.edit_prod_no.text().strip(),
+            "salary_code": self.edit_salary_code.text().strip(),
+        }
+
+    def set_operator_metadata(self, meta: Dict[str, str]) -> None:
+        self.edit_item_code.setText(str(meta.get("item_code") or ""))
+        self.edit_prod_no.setText(str(meta.get("production_number") or ""))
+        self.edit_salary_code.setText(str(meta.get("salary_code") or ""))
 
 
 class ModeSelectionPage(QWidget):
@@ -1700,6 +1914,8 @@ class DashboardWindow(QMainWindow):
     sig_reload_rules = pyqtSignal()
     sig_return_to_setup = pyqtSignal()
     sig_voice_toggled = pyqtSignal(bool)
+    sig_prev_step = pyqtSignal()
+    sig_next_step = pyqtSignal()
 
     def __init__(self, total_rules: int = 0,
                  cameras: Optional[List[Dict[str, Any]]] = None,
@@ -1754,6 +1970,11 @@ class DashboardWindow(QMainWindow):
         self.selected_manifold = None
         self.selected_mode = None
         self.custom_rule_id: Optional[str] = None
+        self.operator_metadata: Dict[str, str] = {
+            "item_code": "",
+            "production_number": "",
+            "salary_code": "",
+        }
         self._prep_back_target: int = 1  # stacked index: 1 = manifold, 2 = manual setup
         self._force_setup = False
         self._setup_event_loop = None  # QEventLoop — quit if window closed during setup (avoids hang)
@@ -1794,10 +2015,10 @@ class DashboardWindow(QMainWindow):
         brand.addWidget(self._logo_lbl, alignment=Qt.AlignmentFlag.AlignVCenter)
         brand.addWidget(self._logo_fallback, alignment=Qt.AlignmentFlag.AlignVCenter)
         brand_text = QVBoxLayout()
-        brand_text.setSpacing(4)
+        brand_text.setSpacing(2)
         org_lbl = QLabel(SHELL_ORG)
         org_lbl.setObjectName("brandOrg")
-        ctx_lbl = QLabel(f"{SHELL_PLANT}  ·  {SHELL_DEPT}".upper())
+        ctx_lbl = QLabel("AUTOMATED OPTICAL MANIFOLD INSPECTION")
         ctx_lbl.setObjectName("brandContext")
         brand_text.addWidget(org_lbl)
         brand_text.addWidget(ctx_lbl)
@@ -1819,6 +2040,20 @@ class DashboardWindow(QMainWindow):
         live_meta = QHBoxLayout()
         live_meta.setSpacing(8)
         live_meta.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.header_manifold_badge = QLabel("")
+        self.header_manifold_badge.setObjectName("headerStatus")
+        self.header_manifold_badge.setStyleSheet(
+            "background-color: #f3f1ea; color: #0e2742; border: 1px solid #d8d3c8; "
+            "border-radius: 4px; padding: 3px 8px; font-weight: 700; font-size: 11px;"
+        )
+        self.header_manifold_badge.hide()
+        self.header_mode_badge = QLabel("")
+        self.header_mode_badge.setObjectName("headerStatus")
+        self.header_mode_badge.setStyleSheet(
+            "background-color: #f5eaf1; color: #810055; border: 1px solid #d5b4c8; "
+            "border-radius: 4px; padding: 3px 8px; font-weight: 700; font-size: 11px;"
+        )
+        self.header_mode_badge.hide()
         self.header_status = QLabel("Stopped")
         self.header_status.setObjectName("headerStatus")
         self.header_status.setStyleSheet(_status_pill_qss("stopped"))
@@ -1826,6 +2061,8 @@ class DashboardWindow(QMainWindow):
         self.clock_lbl = QLabel()
         self.clock_lbl.setObjectName("headerClock")
         self.clock_lbl.hide()
+        live_meta.addWidget(self.header_manifold_badge)
+        live_meta.addWidget(self.header_mode_badge)
         live_meta.addWidget(self.header_status)
         live_meta.addWidget(self.clock_lbl)
         right.addLayout(live_meta)
@@ -1845,6 +2082,7 @@ class DashboardWindow(QMainWindow):
         # Stack 1: Manifold Selection (Second page)
         self.manifold_page = ManifoldSelectionPage(self.config_dir, self.project_root, self)
         self.manifold_page.sig_manifold_selected.connect(self._on_manifold_selected)
+        self.manifold_page.sig_open_camera_setup.connect(self._on_manifold_open_setup)
         self.manifold_page.sig_back.connect(self._on_manifold_back)
         self.manifold_page.sig_add_manifold.connect(self._on_add_manifold)
         self.stacked_widget.addWidget(self.manifold_page)
@@ -1853,6 +2091,7 @@ class DashboardWindow(QMainWindow):
         self.manual_setup_page = ManualInspectionSetupPage(self.project_root, self.config_dir, self)
         self.manual_setup_page.sig_continue.connect(self._on_manual_setup_continue)
         self.manual_setup_page.sig_back.connect(self._on_manual_setup_back)
+        self.manual_setup_page.sig_add_manifold.connect(self._on_add_manifold)
         self.stacked_widget.addWidget(self.manual_setup_page)
 
         _mlabels = manifold_labels(self.config_dir)
@@ -1904,6 +2143,16 @@ class DashboardWindow(QMainWindow):
         self.btn_start_screen = self._make_btn("Start screen", "btnSetup", self._on_return_to_start, enabled=True)
         cl.addWidget(self.btn_start_screen)
 
+        cl.addSpacing(12)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, max(total_rules, 1))
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("Progress: %v / %m steps")
+        self.progress_bar.setFixedHeight(22)
+        self.progress_bar.setMinimumWidth(180)
+        self.progress_bar.setMaximumWidth(280)
+        cl.addWidget(self.progress_bar)
+
         cl.addStretch()
 
         self.state_lbl = QLabel("Stopped")
@@ -1925,6 +2174,8 @@ class DashboardWindow(QMainWindow):
         self.instruction_panel = InstructionPanel()
         self.instruction_panel.setFixedWidth(320)
         self.instruction_panel.sig_manual_result.connect(self._on_manual_choice)
+        self.instruction_panel.sig_prev_step.connect(self.sig_prev_step.emit)
+        self.instruction_panel.sig_next_step.connect(self.sig_next_step.emit)
         body_layout.addWidget(self.instruction_panel)
 
         # RIGHT — six equal camera tiles. Size is preview only.
@@ -1964,38 +2215,6 @@ class DashboardWindow(QMainWindow):
         self._laid_out_faces = None
         self._layout_cameras()
 
-        # ── Footer: progress bar ──
-        footer = QFrame()
-        footer.setObjectName("footerBar")
-        footer.setFixedHeight(40)
-        fl = QHBoxLayout(footer)
-        fl.setContentsMargins(16, 8, 16, 8)
-        fl.setSpacing(12)
-
-        prog_lbl = QLabel("Progress")
-        prog_lbl.setObjectName("pageMeta")
-        fl.addWidget(prog_lbl)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, max(total_rules, 1))
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("%v / %m steps")
-        self.progress_bar.setFixedHeight(22)
-        fl.addWidget(self.progress_bar, stretch=1)
-        root.addWidget(footer)
-
-        # ── Global app footer (all stack pages) ──
-        app_footer = QFrame()
-        app_footer.setObjectName("appFooter")
-        app_footer.setFixedHeight(36)
-        footer_layout = QHBoxLayout(app_footer)
-        footer_layout.setContentsMargins(24, 0, 24, 0)
-        ver_lbl = QLabel(f"{SHELL_ORG} · {SHELL_PLANT} · {SHELL_DEPT}")
-        ver_lbl.setObjectName("pageMeta")
-        footer_layout.addWidget(ver_lbl)
-        footer_layout.addStretch()
-        global_layout.addWidget(app_footer)
-
         # ── Clock timer ──
         self._clock = QTimer(self)
         self._clock.timeout.connect(self._tick_clock)
@@ -2009,12 +2228,44 @@ class DashboardWindow(QMainWindow):
             self._busy_overlay = SessionBusyOverlay(central)
         self.showMaximized()
 
+    def _update_header_badges(self) -> None:
+        m = (self.selected_manifold or "").strip()
+        meta = getattr(self, "operator_metadata", {}) or {}
+        bits = []
+        if m:
+            bits.append(f"MANIFOLD: {m}")
+        if meta.get("item_code"):
+            bits.append(f"ITEM: {meta['item_code']}")
+        if meta.get("production_number"):
+            bits.append(f"PROD: {meta['production_number']}")
+        if meta.get("salary_code"):
+            bits.append(f"OP: {meta['salary_code']}")
+        if bits:
+            self.header_manifold_badge.setText("  ·  ".join(bits))
+            self.header_manifold_badge.show()
+        else:
+            self.header_manifold_badge.hide()
+
+        mode = (self.selected_mode or "").strip()
+        if mode == "custom":
+            self.header_mode_badge.setText("MODE: MANUAL")
+            self.header_mode_badge.show()
+        elif mode == "sequential":
+            self.header_mode_badge.setText("MODE: SEQUENTIAL")
+            self.header_mode_badge.show()
+        else:
+            self.header_mode_badge.hide()
+
     def _on_stack_page_changed(self, index: int) -> None:
         if index == 4:
             kick = "Manual inspection" if self.selected_mode == "custom" else "Sequential cell"
         else:
             kick = PAGE_KICKERS.get(index, SHELL_APP)
         self.header_kicker.setText(str(kick).upper())
+        self._update_header_badges()
+        if index == 3 and hasattr(self, "prep_page"):
+            cdir = self.config_dir or os.path.join(self.project_root, "config")
+            self.prep_page.refresh_readiness(cdir, self.selected_manifold or "DALIA")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2027,22 +2278,27 @@ class DashboardWindow(QMainWindow):
         cdir = self.config_dir or os.path.join(self.project_root, "config")
         return bool(check_port_map_exists(cdir))
 
-    def _camera_setup_due(self) -> bool:
+    def _camera_setup_due(self, manifold: Optional[str] = None) -> bool:
         if self._force_setup or not self._port_map_ready():
             return True
         cdir = self.config_dir or os.path.join(self.project_root, "config")
-        return not setup_is_complete(cdir)
+        target = manifold or self.selected_manifold
+        return not setup_is_complete(cdir, target)
 
     def _go_live_or_prep(self, manifold: str, prep_back: int) -> None:
         self.selected_manifold = manifold
-        if self._camera_setup_due():
+        self._update_header_badges()
+        if self._camera_setup_due(manifold):
             self._prep_back_target = prep_back
+            cdir = self.config_dir or os.path.join(self.project_root, "config")
+            self.prep_page.refresh_readiness(cdir, manifold)
             self.stacked_widget.setCurrentIndex(3)
         else:
             self._enter_live_dashboard(manifold)
 
     def _on_mode_selected(self, mode: str):
         self.selected_mode = mode
+        self._update_header_badges()
         cdir = self.config_dir or os.path.join(self.project_root, "config")
         labels = manifold_labels(cdir)
         last = load_last_manifold(cdir, labels)
@@ -2053,15 +2309,14 @@ class DashboardWindow(QMainWindow):
             self.manual_setup_page.reload_from_disk()
             self.stacked_widget.setCurrentIndex(2)
             return
-        if len(labels) > 1:
-            self.manifold_page.set_manifold_items(labels, last)
-            self.stacked_widget.setCurrentIndex(1)
-            return
-        self.custom_rule_id = None
-        self._go_live_or_prep(labels[0] if labels else last, 0)
+        self.manifold_page.set_manifold_items(labels, last)
+        self.stacked_widget.setCurrentIndex(1)
 
     def _on_manifold_selected(self, manifold: str):
         self.selected_manifold = manifold
+        self.operator_metadata = self.manifold_page.get_operator_metadata()
+        self.manual_setup_page.set_operator_metadata(self.operator_metadata)
+        self._update_header_badges()
         if self.selected_mode == "custom":
             self.custom_rule_id = None
             self.manual_setup_page.set_initial_manifold(manifold)
@@ -2070,6 +2325,17 @@ class DashboardWindow(QMainWindow):
         else:
             self.custom_rule_id = None
             self._go_live_or_prep(manifold, 1)
+
+    def _on_manifold_open_setup(self, manifold: str):
+        self.selected_manifold = manifold
+        self.operator_metadata = self.manifold_page.get_operator_metadata()
+        self.manual_setup_page.set_operator_metadata(self.operator_metadata)
+        self.custom_rule_id = None
+        self._prep_back_target = 1
+        self._update_header_badges()
+        cdir = self.config_dir or os.path.join(self.project_root, "config")
+        self.prep_page.refresh_readiness(cdir, manifold)
+        self.stacked_widget.setCurrentIndex(3)
 
     def _on_manifold_back(self):
         self.stacked_widget.setCurrentIndex(0)
@@ -2104,6 +2370,8 @@ class DashboardWindow(QMainWindow):
             return
         self.custom_rule_id = rid
         self.selected_manifold = self.manual_setup_page.get_manifold()
+        self.operator_metadata = self.manual_setup_page.get_operator_metadata()
+        self.manifold_page.set_operator_metadata(self.operator_metadata)
         self._go_live_or_prep(self.selected_manifold, 2)
 
     def _on_redo_camera_setup(self):
@@ -2132,7 +2400,30 @@ class DashboardWindow(QMainWindow):
             )
             return
         cdir = self.config_dir or os.path.join(self.project_root, "config")
-        mark_setup_complete(cdir, True)
+        try:
+            from connectivity_rules_io import load_rules_file, roi_names_by_face, unknown_holes_vs_rois
+            folder = manifold_folder_for_label(m, cdir) or "DALIA"
+            rules = load_rules_file(os.path.join(cdir, folder, "connectivity_rules.json"))
+            rois = roi_names_by_face(cdir, folder)
+            missing = unknown_holes_vs_rois(rules, rois)
+            if missing:
+                lines = [f"  • Face {f}: {h}" for f, h in missing[:15]]
+                if len(missing) > 15:
+                    lines.append(f"  … and {len(missing) - 15} more")
+                ans = QMessageBox.question(
+                    self,
+                    "Pre-flight ROI check",
+                    f"{len(missing)} rule hole(s) do not have a placed ROI ellipse yet:\n\n"
+                    + "\n".join(lines)
+                    + "\n\nContinue to live inspection anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if ans != QMessageBox.StandardButton.Yes:
+                    return
+        except Exception:
+            pass
+        mark_setup_complete(cdir, True, m)
         self._force_setup = False
         self._enter_live_dashboard(m)
 
@@ -2314,6 +2605,8 @@ class DashboardWindow(QMainWindow):
             dlg.exec()
         finally:
             self._roi_session_open = False
+            if hasattr(self, "prep_page"):
+                self.prep_page.refresh_readiness(cdir, manifold)
 
     def _on_edit_hole_connections(self):
         if RuleEditorDialog is None:
@@ -2342,10 +2635,13 @@ class DashboardWindow(QMainWindow):
         if dlg.exec() == QDialog.DialogCode.Accepted and getattr(dlg, "saved", False):
             if hasattr(self, "manual_setup_page"):
                 self.manual_setup_page.reload_from_disk()
+            if hasattr(self, "prep_page"):
+                self.prep_page.refresh_readiness(cdir, manifold)
             self.sig_reload_rules.emit()
 
     def _enter_live_dashboard(self, manifold: str):
         self.selected_manifold = manifold
+        self._update_header_badges()
         cdir = self.config_dir or os.path.join(self.project_root, "config")
         save_last_manifold(cdir, manifold)
         self.stacked_widget.setCurrentIndex(4)
@@ -2585,19 +2881,14 @@ class DashboardWindow(QMainWindow):
             self._tell_workers_highlights(inputs_by_face, outputs_by_face)
 
     def present_manual_check(self) -> None:
-        """Show Pass/Fail for the current hole. Only while inspection is running."""
+        """Show inline Pass/Fail buttons inside InstructionPanel (no blocking popup)."""
         if not self._inspection_running or not self._guided_sequence:
             return
         step = self._guided_sequence[self._current_step_index]
         if str(step.get("execution") or "auto") != "manual":
             return
         self._manual_latched = False
-        self.instruction_panel.reveal_manual_actions(False)
-        if self._manual_dialog is None:
-            self._manual_dialog = ManualCheckDialog(self)
-            self._manual_dialog.sig_result.connect(self._on_manual_choice)
-        self._manual_dialog.set_step(step)
-        self._manual_dialog.exec()
+        self.instruction_panel.reveal_manual_actions(True)
 
     def dismiss_manual_check(self) -> None:
         self.instruction_panel.reveal_manual_actions(False)

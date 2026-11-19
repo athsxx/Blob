@@ -609,14 +609,20 @@ class RoiEditorDialog(QDialog):
             self.canvas.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _refresh_hole_combo(self, face: str) -> None:
+        try:
+            from connectivity_rules_io import canonical_hole_key
+        except ImportError:
+            canonical_hole_key = lambda x: str(x or "").strip().upper()
         used = {e["name"] for e in self.canvas.ellipses}
+        used_keys = {canonical_hole_key(u) for u in used if canonical_hole_key(u)}
         self.hole_combo.clear()
         names = hole_ids_for_face(self._rules, face)
         if not names:
             self.hole_combo.addItem("(no rule holes for this face)", userData="")
             return
         for name in names:
-            suffix = " — placed" if name in used else ""
+            is_placed = name in used or (canonical_hole_key(name) in used_keys)
+            suffix = " — ✓ placed" if is_placed else " — ⚠ missing"
             self.hole_combo.addItem(f"{name}{suffix}", userData=name)
 
     def _on_face_changed(self) -> None:
@@ -691,9 +697,20 @@ class RoiEditorDialog(QDialog):
         h, w = frame.shape[:2]
         self._frame_size = (w, h)
         self.canvas.set_frame(frame)
+        self.canvas.place_name = None
+        self.canvas._drag = None
         path = self._roi_path(face)
         if not keep_ellipses:
-            ellipses, _, _ = _load_circles(path)
+            ellipses, calib_w, calib_h = _load_circles(path)
+            if calib_w and calib_h and (calib_w != w or calib_h != h):
+                scale = min(w / float(calib_w), h / float(calib_h))
+                ox = (w - calib_w * scale) / 2.0
+                oy = (h - calib_h * scale) / 2.0
+                for e in ellipses:
+                    e["cx"] = float(e["cx"]) * scale + ox
+                    e["cy"] = float(e["cy"]) * scale + oy
+                    e["w"] = max(MIN_AXIS, float(e["w"]) * scale)
+                    e["h"] = max(MIN_AXIS, float(e["h"]) * scale)
             self.canvas.ellipses = ellipses
             self.canvas.selected = 0 if ellipses else -1
             self._refresh_hole_combo(face)

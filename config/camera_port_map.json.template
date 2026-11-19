@@ -4,7 +4,7 @@
     "Run the assignment wizard to generate the real file:",
     "    python tools/assign_camera_faces.py",
     "The wizard will create config/camera_port_map.json with your actual USB port paths.",
-    "You can also assign faces from the app: Assign camera faces on the pre-inspection page."
+    "You can also assign faces from the app: Assign camera faces on the pre-inspection page.",
     "This template shows the expected schema."
   ],
   "schema_version": 1,

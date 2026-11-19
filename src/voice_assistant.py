@@ -49,7 +49,8 @@ def format_hole_for_speech(hole_id: str) -> str:
     if not text:
         return "unknown hole"
 
-    # Common domain replacements
+    # Common domain replacements (including cp1252 UTF-8 mojibake repair)
+    text = text.replace("Ã˜", "Ø").replace("Ã¸", "Ø").replace("Ã\x98", "Ø")
     text = text.replace("Ø", "Diameter ").replace("ø", "Diameter ")
     text = re.sub(r"\bSEC\.?\s*", "Section ", text, flags=re.IGNORECASE)
     text = re.sub(r"\bSR\.?\s*NO\.?\s*", "Serial Number ", text, flags=re.IGNORECASE)

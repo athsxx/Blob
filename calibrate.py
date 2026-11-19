@@ -45,7 +45,7 @@ class Calibrator:
         self.ellipses = []
         if os.path.exists(CONFIG_PATH):
             try:
-                with open(CONFIG_PATH, 'r') as f:
+                with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 
                 # Load from circles format (what camera_worker.py uses)
@@ -105,7 +105,7 @@ class Calibrator:
                 "angle": int(e['angle'])
             }
             circles.append(entry)
-        with open(CONFIG_PATH, 'w') as f:
+        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             h, w = (self.original_frame.shape[:2] if self.original_frame is not None else (480, 640))
             json.dump({"calib_width": int(w), "calib_height": int(h), "circles": circles}, f, indent=2)
         print(f"[SUCCESS] Saved {len(circles)} ROIs to {CONFIG_PATH}")
@@ -289,7 +289,7 @@ def resolve_config_from_cameras_json(cam_idx, cameras_json="config/cameras.json"
     if not os.path.exists(cameras_json):
         return None
     try:
-        with open(cameras_json, 'r') as f:
+        with open(cameras_json, 'r', encoding='utf-8') as f:
             data = json.load(f)
         for cam in data.get("cameras", []):
             if cam.get("usb_index") == cam_idx and cam.get("enabled", True):

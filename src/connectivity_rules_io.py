@@ -63,10 +63,18 @@ _LEGACY_HOLE_IDS = {
     "SEC_M_M_COUNTER": "SEC. M-M COUNTER",
     "SEC_M1_M1": "SEC. M1-M1",
     "M1_M1": "SEC. M1-M1",
+    "SEC. M1-M1 (A)": "SEC. M1-M1",
+    "SEC. M1-M1(A)": "SEC. M1-M1",
+    "M1-M1 (A)": "SEC. M1-M1",
+    "M1-M1(A)": "SEC. M1-M1",
     "SEC_N_N": "SEC. N-N",
     "N_N": "SEC. N-N",
     "SEC_N1_N1": "SEC. N1-N1",
     "N1_N1": "SEC. N1-N1",
+    "SEC. N1-N1 (B)": "SEC. N1-N1",
+    "SEC. N1-N1(B)": "SEC. N1-N1",
+    "N1-N1 (B)": "SEC. N1-N1",
+    "N1-N1(B)": "SEC. N1-N1",
     "SEC_P_P": "SEC. P-P",
     "P_P": "SEC. P-P",
     "SEC_JK_JK": "SEC. JK-JK",
@@ -86,6 +94,11 @@ _LEGACY_HOLE_IDS = {
     "SEC_Z_Z_COUNTER": "SEC. Z4-Z4 COUNTER",
     "CENTRE_HOLE": "CENTRE HOLE",
     "CENTER_HOLE": "CENTRE HOLE",
+    "ANGULAR HOLE (LD-LD)": "Ø6.5 (SR. NO. 1185) LD-LD",
+    "ANGULAR_HOLE_(LD-LD)": "Ø6.5 (SR. NO. 1185) LD-LD",
+    "STRIGHT HOLE (LE-LE)": "Ø6.5 (SR. NO. 1188) LE-LE",
+    "STRAIGHT HOLE (LE-LE)": "Ø6.5 (SR. NO. 1188) LE-LE",
+    "STRIGHT_HOLE_(LE-LE)": "Ø6.5 (SR. NO. 1188) LE-LE",
 }
 
 # F-C and C-F are the same pair of cameras. Store one token.
@@ -196,6 +209,8 @@ def normalize_hole_id(raw: Any) -> str:
     text = _nfc(raw).strip()
     if not text:
         return ""
+    # Repair Windows cp1252 UTF-8 mojibake for Ø/ø (0xC3 0x98 -> Ã˜, 0xC3 0xB8 -> Ã¸)
+    text = text.replace("Ã˜", "Ø").replace("Ã¸", "Ø").replace("Ã\x98", "Ø")
     text = text.replace("ø", "Ø").replace("Ø".lower(), "Ø")
     text = text.replace("phi", "Ø").replace("PHI", "Ø")
     text = " ".join(text.replace("\n", " ").split())
@@ -204,6 +219,7 @@ def normalize_hole_id(raw: Any) -> str:
     text = re.sub(r"\s*\)", ")", text)
     text = re.sub(r"\s+", " ", text).strip()
     text = text.replace("Ø9.14 (SR. NO. 426) - A", "Ø9.14 (SR. NO. 426 - A)")
+    text = text.replace("Ø9.14 (SR. NO. 426) - B", "Ø9.14 (SR. NO. 426 - B)")
     if text == "Ø4 (OVAL HOLE)":
         text = "Ø4 (OVAL HOLE) (SR. NO. 1079)"
     if text in {"CENTRE HOLE (ANGULAR)", "CENTRE HOLE (ANGULAR) (OBLONG HOLE)"}:
@@ -217,28 +233,39 @@ def normalize_hole_id(raw: Any) -> str:
     body = re.sub(r"\s+", " ", body).strip()
     body = body.replace("(COUNTER)", "COUNTER")
     body = re.sub(r"\s+", " ", body).strip()
+    if body in _LEGACY_HOLE_IDS:
+        return _LEGACY_HOLE_IDS[body]
     if body in _SECTION_BODY:
         return _SECTION_BODY[body]
     return text
+
+
+def canonical_hole_key(raw: Any) -> str:
+    """
+    Encoding-safe, alias-safe canonical ASCII key for matching a rule hole ID
+    against an ROI label in CameraWorker, LogicEngine, and UI validators.
+    """
+    norm = normalize_hole_id(raw)
+    if not norm:
+        return ""
+    norm = norm.replace("Ø", "DIA ").replace("ø", "DIA ")
+    norm = re.sub(r"[^0-9A-Z.]+", " ", norm)
+    return " ".join(norm.split())
 
 
 def _is_shop_note(hole: str, out_hole: str) -> bool:
     """Length and HOLE OPEN rows are shop notes, not connections."""
     hole_u = _nfc(hole).upper()
     out_u = _nfc(out_hole).strip().upper()
+    if not hole_u.strip() and not out_u.strip():
+        return True
     if re.search(r"\bLENGTH\b", hole_u):
         return True
     return out_u.startswith("HOLE OPEN")
 
 
 def _insert_for_passage(insert: str, exit_holes: Sequence[str]) -> str:
-    """The T4 row that lights SEC. P-P is SEC. T-T CENTRE, not a second T4."""
-    if (
-        insert == "SEC. T4-T4 COUNTER"
-        and "SEC. P-P" in exit_holes
-        and "B11" not in exit_holes
-    ):
-        return "SEC. T-T CENTRE"
+    """Preserve distinct section insert holes (e.g. SEC. T4-T4 COUNTER vs SEC. T-T CENTRE)."""
     return insert
 
 
@@ -712,23 +739,50 @@ def unknown_holes_vs_rois(
     rules: Sequence[Dict[str, Any]],
     roi_names: Dict[str, Set[str]],
 ) -> List[Tuple[str, str]]:
+    """
+    Return (face, hole_id) pairs required by rules that have no matching ROI.
+    For compound faces (e.g. A_E, C_F, B_OR_D), the hole is satisfied if at
+    least one candidate face has the ROI drawn.
+    """
     missing: List[Tuple[str, str]] = []
     seen: Set[Tuple[str, str]] = set()
-    known_rules = {f: set(hole_ids_for_face(rules, f)) for f in "ABCDEF"}
-    for face in "ABCDEF":
-        for hid in sorted(known_rules[face]):
-            rois = roi_names.get(face) or set()
-            if hid in rois:
-                continue
-            # Excel-normalized name vs a spaced ROI label
-            aliases = {hid, hid.replace("_", " "), hid.replace("_", "-")}
-            if any(a in rois for a in aliases):
-                continue
-            key = (face, hid)
-            if key not in seen:
-                seen.add(key)
-                missing.append(key)
-    return missing
+    roi_keys_by_face: Dict[str, Set[str]] = {
+        f: {canonical_hole_key(r) for r in (roi_names.get(f) or set()) if canonical_hole_key(r)}
+        for f in "ABCDEF"
+    }
+
+    def _has_roi_on_face(face: str, hid: str) -> bool:
+        rois = roi_names.get(face) or set()
+        if hid in rois:
+            return True
+        ckey = canonical_hole_key(hid)
+        if ckey and ckey in roi_keys_by_face.get(face, set()):
+            return True
+        aliases = {hid, hid.replace("_", " "), hid.replace("_", "-")}
+        return any(a in rois for a in aliases)
+
+    for rule in rules or []:
+        inp = rule.get("input") or {}
+        in_face_raw = str(inp.get("face", "")).strip()
+        in_hole = str(inp.get("hole_id", "")).strip()
+        in_faces = parse_face_to_faces(in_face_raw)
+        if in_faces and in_hole:
+            if not any(_has_roi_on_face(f, in_hole) for f in in_faces):
+                key = (in_faces[0], in_hole)
+                if key not in seen:
+                    seen.add(key)
+                    missing.append(key)
+        for out in rule.get("expected_outputs") or []:
+            out_face_raw = str(out.get("face", "")).strip()
+            out_hole = str(out.get("hole_id", "")).strip()
+            out_faces = parse_face_to_faces(out_face_raw)
+            if out_faces and out_hole:
+                if not any(_has_roi_on_face(f, out_hole) for f in out_faces):
+                    key = (out_faces[0], out_hole)
+                    if key not in seen:
+                        seen.add(key)
+                        missing.append(key)
+    return sorted(missing)
 
 
 def guided_step_count(
@@ -1169,6 +1223,7 @@ def write_connections_workbook(path: str, rules: Sequence[Dict[str, Any]]) -> st
         import openpyxl
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         from openpyxl.utils import get_column_letter
+        from openpyxl.worksheet.datavalidation import DataValidation
     except ImportError as exc:
         raise RuntimeError(
             "openpyxl is not installed. pip install openpyxl"
@@ -1197,6 +1252,32 @@ def write_connections_workbook(path: str, rules: Sequence[Dict[str, Any]]) -> st
     sheet.row_dimensions[1].height = 22
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+
+    # Excel DataValidation dropdowns on Manual (Col A) and Input View (Col C)
+    try:
+        dv_manual = DataValidation(
+            type="list",
+            formula1='"YES,"',
+            allow_blank=True,
+            showDropDown=False,
+        )
+        dv_manual.promptTitle = "Manual Check"
+        dv_manual.prompt = "Leave blank for automatic camera detection, or select YES for operator Pass/Fail."
+        sheet.add_data_validation(dv_manual)
+        dv_manual.add("A2:A200")
+
+        dv_view = DataValidation(
+            type="list",
+            formula1='"A,B,C,D,E,F,A-E,A-F,B-C,C-F,B or D"',
+            allow_blank=True,
+            showDropDown=False,
+        )
+        dv_view.promptTitle = "Camera Face (View)"
+        dv_view.prompt = "Single face (A..F) or compound face if visible on two cameras (A-E, A-F, C-F)."
+        sheet.add_data_validation(dv_view)
+        dv_view.add("C2:C200")
+    except Exception:
+        pass
 
     manual_fill = PatternFill("solid", fgColor="FCE4D6")
     for row_i, item in enumerate(inspection_rows_from_rules(rules), start=2):
@@ -1233,9 +1314,10 @@ def write_connections_workbook(path: str, rules: Sequence[Dict[str, Any]]) -> st
         "Leave Manual blank and the cameras decide.",
         "Do not add LENGTH rows or a Mock Up column. Those are not rules.",
         "Section holes are written SEC. T1-T1 — SEC, a full stop, a space, then the section. ALL CAPS.",
+        "Diameter holes can be written with Ø, DIA, or PHI (e.g. Ø4 (ROUND HOLE) or DIA 4 (ROUND HOLE)).",
         "Example: Insert Rod A14, View A-F, For Inspection SEC. M-M, A13, View B, B.",
         "A new manifold starts from a blank copy of this workbook plus an empty rules file.",
-        "In the app: Hole connections, Load spreadsheet, tick Manual where needed, then Save.",
+        "In the app: Hole connections -> Load spreadsheet -> Save, then Place hole ROIs for each face A-F.",
     ]
     for index, line in enumerate(lines, start=3):
         how.cell(index, 1, line)

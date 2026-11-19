@@ -214,6 +214,15 @@ def main():
 
     # ── Dynamic Configuration Loading ──
     print(f"\n[Main] Operator Selected: Mode={inspection_mode}, Manifold={selected_manifold}")
+    op_meta = getattr(dashboard, "operator_metadata", {}) or {}
+    if hasattr(logger, "set_session_metadata"):
+        logger.set_session_metadata(
+            item_code=op_meta.get("item_code", ""),
+            production_number=op_meta.get("production_number", ""),
+            salary_code=op_meta.get("salary_code", ""),
+            manifold=selected_manifold or "",
+            mode=inspection_mode or "",
+        )
 
     # Reload + re-resolve after setup (operator may have assigned faces on the prep page)
     cameras = load_cameras(cameras_file)
@@ -272,7 +281,7 @@ def main():
     for cam in cameras:
         status = "✓" if cam.get('enabled', True) else "✗"
         if selected_manifold:
-            cam['config'] = f"config/{roi_subdir}/{os.path.basename(cam['config'])}"
+            cam['config'] = os.path.join(os.path.abspath(args.config_dir), roi_subdir, os.path.basename(cam['config']))
         print(f"  [{status}] USB {cam['usb_index']} → Face {cam['face']} → {cam['config']}")
         cfg_rel = cam["config"]
         abs_roi = (
@@ -287,7 +296,7 @@ def main():
     print()
 
     # Pass the total rules to dashboard now that we know them
-    if dashboard:
+    if dashboard and hasattr(dashboard, "progress_bar"):
         dashboard.progress_bar.setRange(0, total_rules)
         dashboard.progress_bar.setFormat(f"%v / {total_rules} steps")
 
@@ -432,7 +441,7 @@ def main():
             "roi_calib_height": 480,
             "reject_high_res": False,
             "reject_high_fps": False,
-            "log_dir": os.path.join(project_root, "logs"),
+            "log_dir": getattr(logger, "session_dir", os.path.join(project_root, "logs")),
         }
         if cam.get("device_path"):
             capture_settings["device_path"] = cam["device_path"]
@@ -566,8 +575,18 @@ def main():
 
             def _finish_all_steps():
                 step_timer.stop()
+                engine.stop()
                 if hasattr(dashboard, "dismiss_manual_check"):
                     dashboard.dismiss_manual_check()
+                if hasattr(dashboard, "_clear_hole_highlights"):
+                    dashboard._clear_hole_highlights()
+                if hasattr(dashboard, "btn_start"):
+                    dashboard.btn_start.setEnabled(getattr(dashboard, "_cameras_ready", True))
+                    dashboard.btn_stop.setEnabled(False)
+                    dashboard.btn_pause.setEnabled(False)
+                    dashboard.btn_resume.setEnabled(False)
+                    dashboard.btn_override.setEnabled(False)
+                    dashboard.state_lbl.setText("Complete")
                 if hasattr(dashboard.instruction_panel, "set_sequence_complete"):
                     passed_n, failed_n = dashboard.instruction_panel.set_sequence_complete()
                 else:
@@ -582,6 +601,8 @@ def main():
 
             def _arm_step_clock():
                 """Automatic holes get the 60s clock. Manual holes wait for Pass or Fail."""
+                if not engine._running or engine._paused:
+                    return
                 step_timed_out[0] = False
                 current_step = engine.get_current_guided_step()
                 total_steps = len(engine._guided_sequence or [])
@@ -640,6 +661,8 @@ def main():
                     )
                     # Advance after short delay
                     def _advance_after_timeout():
+                        if not engine._running or engine._paused:
+                            return
                         next_step = engine.advance_guided_step()
                         if next_step is not None:
                             new_idx = engine._guided_step_index
@@ -698,6 +721,30 @@ def main():
                     dashboard.update_result(eval_result.to_dict())
                     print(f"[Main] Manual override: {rule_id} → {result}")
                     logger.log_system("INFO", f"Manual override: {rule_id} → {result}")
+                    if engine.guided_mode and engine._running and rule_id == engine._active_rule_id and not step_timed_out[0]:
+                        step_timed_out[0] = True
+                        step_idx = engine._guided_step_index
+                        seq_len = len(engine._guided_sequence or [])
+                        passed = (result == "PASS")
+                        if engine._guided_sequence and 0 <= step_idx < seq_len and hasattr(dashboard, "update_step_result"):
+                            dashboard.update_step_result(step_idx, passed=passed)
+                        has_next = (step_idx + 1) < seq_len
+                        voice.announce_step_result(
+                            step_num=step_idx + 1,
+                            passed=passed,
+                            has_next_step=has_next,
+                            timed_out=False,
+                        )
+                        def _advance_override():
+                            if not engine._running or engine._paused:
+                                return
+                            next_step = engine.advance_guided_step()
+                            if next_step is not None:
+                                dashboard.update_guided_step(engine._guided_step_index)
+                                _arm_step_clock()
+                            else:
+                                _finish_all_steps()
+                        QTimer.singleShot(STEP_ADVANCE_DELAY_MS, _advance_override)
 
             dashboard.sig_override.connect(handle_override)
 
@@ -728,6 +775,8 @@ def main():
                 )
 
                 def _advance_manual():
+                    if not engine._running or engine._paused:
+                        return
                     next_step = engine.advance_guided_step()
                     if next_step is not None:
                         dashboard.update_guided_step(engine._guided_step_index)
@@ -739,6 +788,32 @@ def main():
 
             if hasattr(dashboard, "sig_manual_result"):
                 dashboard.sig_manual_result.connect(handle_manual)
+
+            def _on_prev_step():
+                if not engine.guided_mode or not engine._guided_sequence:
+                    return
+                new_idx = max(0, engine._guided_step_index - 1)
+                step_timed_out[0] = False
+                engine.set_guided_step(new_idx)
+                dashboard.update_guided_step(new_idx)
+                if engine._running and not engine._paused:
+                    _arm_step_clock()
+
+            def _on_next_step():
+                if not engine.guided_mode or not engine._guided_sequence:
+                    return
+                seq_len = len(engine._guided_sequence)
+                new_idx = min(seq_len - 1, engine._guided_step_index + 1)
+                step_timed_out[0] = False
+                engine.set_guided_step(new_idx)
+                dashboard.update_guided_step(new_idx)
+                if engine._running and not engine._paused:
+                    _arm_step_clock()
+
+            if hasattr(dashboard, "sig_prev_step"):
+                dashboard.sig_prev_step.connect(_on_prev_step)
+            if hasattr(dashboard, "sig_next_step"):
+                dashboard.sig_next_step.connect(_on_next_step)
 
             def _on_reload_rules():
                 if engine.is_running:
@@ -861,6 +936,8 @@ def main():
 
                                     # Advance to next step after a short delay
                                     def _advance_step(idx=step_idx):
+                                        if not engine._running or engine._paused:
+                                            return
                                         next_step = engine.advance_guided_step()
                                         if next_step is not None:
                                             new_idx = engine._guided_step_index
@@ -877,7 +954,7 @@ def main():
                     pass
 
                 # Update monitoring progress in instruction panel
-                if engine.guided_mode and hasattr(dashboard, 'update_monitoring_progress'):
+                if engine.guided_mode and engine._running and not engine._paused and hasattr(dashboard, 'update_monitoring_progress'):
                     monitoring = engine.get_monitoring_status()
                     if monitoring:
                         m = monitoring[0]

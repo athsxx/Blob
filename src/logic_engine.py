@@ -18,12 +18,29 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Set, Any
 from datetime import datetime
 from enum import Enum
+import re
+import unicodedata
 
 # Single-face letters used in state keys (Face_HoleID)
 VALID_FACES = frozenset("ABCDEF")
 
 # Default sustained detection window (seconds)
 DEFAULT_STABLE_WINDOW_S = 2.0
+
+
+def _engine_hole_key(value: Any) -> str:
+    """
+    Canonical encoding-safe, alias-safe hole key so cp1252 mojibake (Ã˜ -> Ø),
+    (A)/(B) suffixes, or LD-LD/LE-LE naming variants always match.
+    """
+    try:
+        from connectivity_rules_io import canonical_hole_key
+        return canonical_hole_key(value)
+    except Exception:
+        text = unicodedata.normalize("NFC", str(value or "")).strip().upper()
+        text = text.replace("Ã˜", "Ø").replace("Ã¸", "Ø").replace("Ø", "DIA ")
+        text = re.sub(r"[^0-9A-Z.]+", " ", text)
+        return " ".join(text.split())
 
 
 def rule_has_unavailable_output(rule: Dict, available_faces: Set[str]) -> bool:
@@ -114,7 +131,7 @@ class RuleTracker:
     state: RuleState = RuleState.IDLE
     monitoring_start: float = 0.0        # time.time() when monitoring began
     stable_window_s: float = DEFAULT_STABLE_WINDOW_S
-    grace_period_s: float = 0.5          # tolerate brief detection dropouts
+    grace_period_s: float = 0.85         # tolerate brief detection dropouts at 5 fps
     decision: Optional[InspectionResult] = None
     _last_seen_active: float = 0.0       # last time input was detected
     
@@ -193,6 +210,7 @@ class GlobalState:
         for det in camera_result.get('detections', []):
             hole_id = det.get('hole_id', '')
             roi_key = f"{face}_{hole_id}"
+            canon_key = f"{face}_{_engine_hole_key(hole_id)}"
             
             is_detected = det.get('laser', False)
             confidence = det.get('confidence', 0.0)
@@ -202,32 +220,44 @@ class GlobalState:
             
             if is_detected and not was_detected:
                 # New detection - record timestamp
-                self.detection_times[roi_key] = time.time()
+                now_t = time.time()
+                self.detection_times[roi_key] = now_t
+                self.detection_times[canon_key] = now_t
             elif not is_detected and was_detected:
                 # Lost detection - clear timestamp
                 self.detection_times.pop(roi_key, None)
+                self.detection_times.pop(canon_key, None)
             
             self.roi_states[roi_key] = is_detected
+            self.roi_states[canon_key] = is_detected
             self.confidences[roi_key] = confidence
+            self.confidences[canon_key] = confidence
             
             # If detected, mark as completed (for sequence)
             if is_detected:
                 self.completed_targets.add(roi_key)
+                self.completed_targets.add(canon_key)
     
     def get_detected_holes(self) -> Set[str]:
         """Get all currently detected hole IDs."""
         return {k for k, v in self.roi_states.items() if v}
     
     def is_hole_detected(self, face: str, hole_id: str) -> bool:
-        """Check if a specific hole is currently detected."""
+        """Check if a specific hole is currently detected (exact or canonical match)."""
         key = f"{face}_{hole_id}"
-        return self.roi_states.get(key, False)
+        if self.roi_states.get(key, False):
+            return True
+        canon_key = f"{face}_{_engine_hole_key(hole_id)}"
+        return self.roi_states.get(canon_key, False)
     
     def get_detection_age_ms(self, face: str, hole_id: str) -> Optional[float]:
         """Get how long ago detection started (in ms)."""
         key = f"{face}_{hole_id}"
         if key in self.detection_times:
             return (time.time() - self.detection_times[key]) * 1000
+        canon_key = f"{face}_{_engine_hole_key(hole_id)}"
+        if canon_key in self.detection_times:
+            return (time.time() - self.detection_times[canon_key]) * 1000
         return None
 
 
@@ -285,7 +315,7 @@ class LogicEngine:
             return False
         
         try:
-            with open(filepath, 'r') as f:
+            with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             self.rules = data.get('rules', [])
@@ -365,13 +395,19 @@ class LogicEngine:
             expected_keys.append(out_key)
             
             if len(candidate_faces) == 1:
-                if self.global_state.is_hole_detected(out_face, out_hole):
+                if self.global_state.is_hole_detected(candidate_faces[0], out_hole):
                     detected_keys.append(out_key)
                 elif mandatory:
                     missing_keys.append(out_key)
             else:
                 # Compound/alternative: satisfied if ANY candidate face has hole detected
-                if any(f"{f}_{out_hole}" in detected_holes for f in candidate_faces):
+                canon_out = _engine_hole_key(out_hole)
+                if any(
+                    self.global_state.is_hole_detected(f, out_hole)
+                    or f"{f}_{out_hole}" in detected_holes
+                    or f"{f}_{canon_out}" in detected_holes
+                    for f in candidate_faces
+                ):
                     detected_keys.append(out_key)
                 elif mandatory:
                     missing_keys.append(out_key)
@@ -382,8 +418,14 @@ class LogicEngine:
         """Check if a rule's input is currently detected."""
         input_face = rule.get('input', {}).get('face', '')
         input_hole = rule.get('input', {}).get('hole_id', '')
-        input_key = f"{input_face}_{input_hole}"
-        return input_key in detected_holes
+        candidates = parse_face_to_faces(input_face) or [input_face]
+        canon_in = _engine_hole_key(input_hole)
+        return any(
+            self.global_state.is_hole_detected(f, input_hole)
+            or f"{f}_{input_hole}" in detected_holes
+            or f"{f}_{canon_in}" in detected_holes
+            for f in candidates
+        )
     
     def _all_outputs_detected(self, rule: Dict, detected_holes: Set[str]) -> bool:
         """True if all mandatory outputs are currently detected."""
@@ -453,12 +495,15 @@ class LogicEngine:
         for output in rule.get("expected_outputs", []):
             out_face = output.get("face", "")
             out_hole = output.get("hole_id", "")
+            canon_out = _engine_hole_key(out_hole)
             candidates = parse_face_to_faces(out_face)
             if candidates:
                 for f in candidates:
                     expected_output_keys.add(f"{f}_{out_hole}")
+                    expected_output_keys.add(f"{f}_{canon_out}")
             else:
                 expected_output_keys.add(f"{out_face}_{out_hole}")
+                expected_output_keys.add(f"{out_face}_{canon_out}")
 
         all_detected = self.global_state.get_detected_holes()
         # Only keep detections that are expected outputs for this rule
@@ -469,19 +514,15 @@ class LogicEngine:
         input_hole = rule.get('input', {}).get('hole_id', '')
         input_key = f"{input_face}_{input_hole}"
 
-        # Check if the signal is valid (ONLY CHECKING EXPECTED OUTPUTS, IGNORING INPUT)
-        # Reason: The operator's hand may obstruct the input hole during insertion.
-        # Strict input checking would cause false negatives.
-        
         # Check outputs using helper function
         expected_keys, detected_keys, missing_keys = self._check_outputs(
             rule, filtered_detected
         )
         
         logic = rule.get('logic', 'AND')
-        # AND: all mandatory outputs must be present; optional (mandatory: false) may be absent.
+        # AND: all mandatory outputs must be present; if all outputs are optional, at least one must be detected.
         if logic == 'AND':
-            outputs_valid = len(missing_keys) == 0
+            outputs_valid = len(missing_keys) == 0 and (len(detected_keys) > 0 or not expected_keys)
         else:  # OR
             outputs_valid = len(detected_keys) > 0
 
@@ -870,6 +911,10 @@ class LogicEngine:
         tracker = self._rule_trackers.get(new_rule_id)
         if tracker:
             tracker.reset()
+
+        # Clear stale ROI detections from previous step so lingering detections cannot carry over
+        self.global_state.roi_states.clear()
+        self.global_state.detection_times.clear()
 
         print(f"[LogicEngine] Guided step set to {step_index + 1}/{len(self._guided_sequence)}: "
               f"{step['input_face']}_{step['input_hole']} → rule {new_rule_id}")
