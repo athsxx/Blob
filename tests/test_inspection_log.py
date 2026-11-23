@@ -11,6 +11,7 @@ SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 sys.path.insert(0, SRC)
 
 from logger import InspectionLogger  # noqa: E402
+from logic_engine import scheduled_step_still_current  # noqa: E402
 
 REPORT_NAME = "inspection_report.csv"
 ENGLISH_DAYS = (
@@ -219,6 +220,84 @@ class InspectionLogTests(unittest.TestCase):
             self.assertEqual(s2_rows[1]["ItemCode"], "IC-9002")
             self.assertEqual(s2_rows[1]["ProductionNumber"], "PN-2026-078")
             self.assertEqual(s2_rows[1]["SalaryCode"], "SAL-518")
+
+    def test_existing_master_report_keeps_rule_and_result_columns(self):
+        old_header = [
+            "Date",
+            "Day",
+            "Time",
+            "Session",
+            "RuleID",
+            "Result",
+            "Input",
+            "Expected",
+            "Detected",
+            "Missing",
+        ]
+        with tempfile.TemporaryDirectory() as log_dir:
+            report_path = os.path.join(log_dir, REPORT_NAME)
+            with open(report_path, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(old_header)
+                writer.writerow([
+                    "2026-10-30",
+                    "Friday",
+                    "09:15:00.000",
+                    "7",
+                    "FACE_A_A1",
+                    "PASS",
+                    "A_A1",
+                    "B_B1",
+                    "B_B1",
+                    "",
+                ])
+
+            logger = _open_logger(log_dir)
+            logger.set_session_metadata(
+                item_code="IC-1",
+                production_number="PN-1",
+                salary_code="SAL-1",
+                manifold="DALIA",
+                mode="sequential",
+            )
+            logger.log_inspection({
+                "rule_id": "FACE_B_B2",
+                "result": "FAIL",
+                "input_hole": "B_B2",
+                "expected_outputs": ["C_C2"],
+                "detected_outputs": [],
+                "missing_outputs": ["C_C2"],
+            })
+            logger.stop()
+            rows = _read_report(log_dir)
+
+        self.assertEqual(list(rows[0].keys()), COLUMNS)
+        historical = rows[0]
+        self.assertEqual(historical["Session"], "7")
+        self.assertEqual(historical["RuleID"], "FACE_A_A1")
+        self.assertEqual(historical["Result"], "PASS")
+        self.assertEqual(historical["Input"], "A_A1")
+        self.assertEqual(historical["Expected"], "B_B1")
+        self.assertEqual(historical["Detected"], "B_B1")
+        self.assertEqual(historical["ItemCode"], "")
+        fresh = rows[-1]
+        self.assertEqual(fresh["RuleID"], "FACE_B_B2")
+        self.assertEqual(fresh["Result"], "FAIL")
+        self.assertEqual(fresh["Input"], "B_B2")
+        self.assertEqual(fresh["Missing"], "C_C2")
+        self.assertEqual(fresh["ItemCode"], "IC-1")
+        self.assertEqual(fresh["ProductionNumber"], "PN-1")
+        self.assertEqual(fresh["SalaryCode"], "SAL-1")
+        self.assertEqual(fresh["Manifold"], "DALIA")
+        self.assertEqual(fresh["Mode"], "sequential")
+
+    def test_delayed_advance_does_not_run_after_the_operator_moves(self):
+        self.assertTrue(scheduled_step_still_current(4, 4, True, False))
+        # Prev/Next changed the guided index during the announcement delay.
+        self.assertFalse(scheduled_step_still_current(5, 4, True, False))
+        self.assertFalse(scheduled_step_still_current(3, 4, True, False))
+        self.assertFalse(scheduled_step_still_current(4, 4, False, False))
+        self.assertFalse(scheduled_step_still_current(4, 4, True, True))
 
 
 if __name__ == "__main__":

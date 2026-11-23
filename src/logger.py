@@ -66,6 +66,19 @@ def _safe_slug(text: str, fallback: str = "") -> str:
     return cleaned[:40] if cleaned else fallback
 
 
+def _realign_csv_row(header: list, row: list) -> list:
+    """Map a row written under an older header onto the current columns."""
+    names = list(header or [])
+    if names:
+        names[0] = str(names[0]).lstrip("\ufeff")
+    padded = list(row) + [""] * max(0, len(names) - len(row))
+    by_name = {
+        name: padded[index] if index < len(padded) else ""
+        for index, name in enumerate(names)
+    }
+    return [by_name.get(column, "") for column in CSV_COLUMNS]
+
+
 def _join_holes(value: Any) -> str:
     if not value:
         return ""
@@ -283,7 +296,38 @@ class InspectionLogger:
             except Exception as exc:
                 print(f"Logging error: {exc}")
 
+    def _migrate_csv_header(self, csv_path: str) -> None:
+        """Rewrite a pre-operator-column report so new rows do not shift RuleID/Result.
+
+        Reports created before ItemCode/ProductionNumber/SalaryCode/Manifold/Mode
+        keep the old header. Appending a wider row then stores the pass/fail under
+        the wrong column.
+        """
+        if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
+            return
+        with open(csv_path, newline="", encoding="utf-8") as handle:
+            reader = csv.reader(handle)
+            header = next(reader, None)
+            if not header:
+                return
+            header = list(header)
+            header[0] = str(header[0]).lstrip("\ufeff")
+            if header == CSV_COLUMNS:
+                return
+            old_rows = list(reader)
+        aligned = [_realign_csv_row(header, old) for old in old_rows]
+        tmp = csv_path + ".tmp"
+        with open(tmp, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(CSV_COLUMNS)
+            writer.writerows(aligned)
+        os.replace(tmp, csv_path)
+
     def _append_csv_row(self, csv_path: str, row: list) -> None:
+        try:
+            self._migrate_csv_header(csv_path)
+        except OSError as exc:
+            print(f"Logging error: could not realign {csv_path}: {exc}")
         write_header = (not os.path.exists(csv_path)) or os.path.getsize(csv_path) == 0
         with open(csv_path, "a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)

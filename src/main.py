@@ -45,7 +45,7 @@ from camera_worker import camera_worker_process
 from capture_profile import attach_hubs, interleave_by_hub, load_capture_profile
 from camera_indexer import resolve_camera_indices, check_port_map_exists, load_port_map
 from dashboard import create_dashboard, HAS_PYQT6
-from logic_engine import LogicEngine
+from logic_engine import LogicEngine, scheduled_step_still_current
 from logger import get_logger
 from voice_assistant import VoiceAssistant
 
@@ -622,6 +622,21 @@ def main():
                 if not step_timer.isActive():
                     step_timer.start()
 
+            def _advance_if_still_on(scheduled_index: int) -> None:
+                if not scheduled_step_still_current(
+                    engine._guided_step_index,
+                    scheduled_index,
+                    engine._running,
+                    engine._paused,
+                ):
+                    return
+                next_step = engine.advance_guided_step()
+                if next_step is not None:
+                    dashboard.update_guided_step(engine._guided_step_index)
+                    _arm_step_clock()
+                else:
+                    _finish_all_steps()
+
             def _tick_step_timer():
                 """Called every 1 second while inspection is running."""
                 if not engine._running or engine._paused or _step_is_manual():
@@ -659,18 +674,11 @@ def main():
                         has_next_step=has_next,
                         timed_out=True,
                     )
-                    # Advance after short delay
-                    def _advance_after_timeout():
-                        if not engine._running or engine._paused:
-                            return
-                        next_step = engine.advance_guided_step()
-                        if next_step is not None:
-                            new_idx = engine._guided_step_index
-                            dashboard.update_guided_step(new_idx)
-                            _arm_step_clock()
-                        else:
-                            _finish_all_steps()
-                    QTimer.singleShot(STEP_ADVANCE_DELAY_MS, _advance_after_timeout)
+                    # Advance after short delay, unless Prev/Next already left this hole.
+                    QTimer.singleShot(
+                        STEP_ADVANCE_DELAY_MS,
+                        lambda idx=step_idx: _advance_if_still_on(idx),
+                    )
 
             step_timer = QTimer()
             step_timer.timeout.connect(_tick_step_timer)
@@ -735,16 +743,10 @@ def main():
                             has_next_step=has_next,
                             timed_out=False,
                         )
-                        def _advance_override():
-                            if not engine._running or engine._paused:
-                                return
-                            next_step = engine.advance_guided_step()
-                            if next_step is not None:
-                                dashboard.update_guided_step(engine._guided_step_index)
-                                _arm_step_clock()
-                            else:
-                                _finish_all_steps()
-                        QTimer.singleShot(STEP_ADVANCE_DELAY_MS, _advance_override)
+                        QTimer.singleShot(
+                            STEP_ADVANCE_DELAY_MS,
+                            lambda idx=step_idx: _advance_if_still_on(idx),
+                        )
 
             dashboard.sig_override.connect(handle_override)
 
@@ -774,17 +776,10 @@ def main():
                     timed_out=False,
                 )
 
-                def _advance_manual():
-                    if not engine._running or engine._paused:
-                        return
-                    next_step = engine.advance_guided_step()
-                    if next_step is not None:
-                        dashboard.update_guided_step(engine._guided_step_index)
-                        _arm_step_clock()
-                    else:
-                        _finish_all_steps()
-
-                QTimer.singleShot(STEP_ADVANCE_DELAY_MS, _advance_manual)
+                QTimer.singleShot(
+                    STEP_ADVANCE_DELAY_MS,
+                    lambda idx=step_idx: _advance_if_still_on(idx),
+                )
 
             if hasattr(dashboard, "sig_manual_result"):
                 dashboard.sig_manual_result.connect(handle_manual)
@@ -934,20 +929,12 @@ def main():
                                         timed_out=False,
                                     )
 
-                                    # Advance to next step after a short delay
-                                    def _advance_step(idx=step_idx):
-                                        if not engine._running or engine._paused:
-                                            return
-                                        next_step = engine.advance_guided_step()
-                                        if next_step is not None:
-                                            new_idx = engine._guided_step_index
-                                            dashboard.update_guided_step(new_idx)
-                                            _arm_step_clock()
-                                        else:
-                                            _finish_all_steps()
-
+                                    # Advance after the announcement, unless the operator already moved.
                                     from PyQt6.QtCore import QTimer as _QTimer
-                                    _QTimer.singleShot(STEP_ADVANCE_DELAY_MS, _advance_step)
+                                    _QTimer.singleShot(
+                                        STEP_ADVANCE_DELAY_MS,
+                                        lambda idx=step_idx: _advance_if_still_on(idx),
+                                    )
 
 
                 except queue.Empty:

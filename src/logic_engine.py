@@ -28,6 +28,20 @@ VALID_FACES = frozenset("ABCDEF")
 DEFAULT_STABLE_WINDOW_S = 2.0
 
 
+def scheduled_step_still_current(
+    current_index: int,
+    scheduled_index: int,
+    running: bool,
+    paused: bool,
+) -> bool:
+    """A delayed PASS/FAIL/timeout advance must stay on the hole that was judged.
+
+    Prev and Next change the guided index during the announcement delay. Advancing
+    anyway skips the hole the operator just moved to, with no pass/fail record.
+    """
+    return bool(running) and not paused and current_index == scheduled_index
+
+
 def _engine_hole_key(value: Any) -> str:
     """
     Canonical encoding-safe, alias-safe hole key so cp1252 mojibake (Ã˜ -> Ø),
