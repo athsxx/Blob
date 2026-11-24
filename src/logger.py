@@ -67,11 +67,22 @@ def _safe_slug(text: str, fallback: str = "") -> str:
 
 
 def _realign_csv_row(header: list, row: list) -> list:
-    """Map a row written under an older header onto the current columns."""
+    """Map a row onto the current columns.
+
+    A master report can hold two shapes under the pre-operator header:
+    a short row written before ItemCode/ProductionNumber/SalaryCode/Manifold/Mode
+    existed, and a full-width row the new logger appended before the header was
+    rewritten. Mapping that wide row through the short header stores the item
+    code in RuleID and drops the real pass/fail. Wide rows are already in the
+    current column order.
+    """
     names = list(header or [])
     if names:
         names[0] = str(names[0]).lstrip("\ufeff")
-    padded = list(row) + [""] * max(0, len(names) - len(row))
+    values = list(row)
+    if len(names) < len(CSV_COLUMNS) and len(values) >= len(CSV_COLUMNS):
+        return values[: len(CSV_COLUMNS)]
+    padded = values + [""] * max(0, len(names) - len(values))
     by_name = {
         name: padded[index] if index < len(padded) else ""
         for index, name in enumerate(names)

@@ -291,6 +291,98 @@ class InspectionLogTests(unittest.TestCase):
         self.assertEqual(fresh["Manifold"], "DALIA")
         self.assertEqual(fresh["Mode"], "sequential")
 
+    def test_mixed_width_report_keeps_new_rows_pass_fail(self):
+        """Rows appended under the old header are already in the new column order."""
+        old_header = [
+            "Date",
+            "Day",
+            "Time",
+            "Session",
+            "RuleID",
+            "Result",
+            "Input",
+            "Expected",
+            "Detected",
+            "Missing",
+        ]
+        with tempfile.TemporaryDirectory() as log_dir:
+            report_path = os.path.join(log_dir, REPORT_NAME)
+            with open(report_path, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(old_header)
+                writer.writerow([
+                    "2026-10-30",
+                    "Friday",
+                    "09:15:00.000",
+                    "7",
+                    "FACE_A_A1",
+                    "PASS",
+                    "A_A1",
+                    "B_B1",
+                    "B_B1",
+                    "",
+                ])
+                writer.writerow([
+                    "2026-11-19",
+                    "Thursday",
+                    "10:04:00.000",
+                    "8",
+                    "IC-9",
+                    "PN-9",
+                    "SAL-9",
+                    "DALIA",
+                    "sequential",
+                    "FACE_C_C3",
+                    "PASS",
+                    "C_C3",
+                    "D_D3",
+                    "D_D3",
+                    "",
+                ])
+
+            logger = _open_logger(log_dir)
+            logger.set_session_metadata(
+                item_code="IC-2",
+                production_number="PN-2",
+                salary_code="SAL-2",
+                manifold="DALIA",
+                mode="sequential",
+            )
+            logger.log_inspection({
+                "rule_id": "FACE_D_D4",
+                "result": "FAIL",
+                "input_hole": "D_D4",
+                "expected_outputs": ["E_E4"],
+                "detected_outputs": [],
+                "missing_outputs": ["E_E4"],
+            })
+            logger.stop()
+            rows = _read_report(log_dir)
+
+        self.assertEqual(list(rows[0].keys()), COLUMNS)
+        historical = rows[0]
+        self.assertEqual(historical["RuleID"], "FACE_A_A1")
+        self.assertEqual(historical["Result"], "PASS")
+        self.assertEqual(historical["Input"], "A_A1")
+        self.assertEqual(historical["ItemCode"], "")
+        shifted = rows[1]
+        self.assertEqual(shifted["Session"], "8")
+        self.assertEqual(shifted["ItemCode"], "IC-9")
+        self.assertEqual(shifted["ProductionNumber"], "PN-9")
+        self.assertEqual(shifted["SalaryCode"], "SAL-9")
+        self.assertEqual(shifted["Manifold"], "DALIA")
+        self.assertEqual(shifted["Mode"], "sequential")
+        self.assertEqual(shifted["RuleID"], "FACE_C_C3")
+        self.assertEqual(shifted["Result"], "PASS")
+        self.assertEqual(shifted["Input"], "C_C3")
+        self.assertEqual(shifted["Expected"], "D_D3")
+        self.assertEqual(shifted["Detected"], "D_D3")
+        self.assertEqual(shifted["Missing"], "")
+        fresh = rows[-1]
+        self.assertEqual(fresh["RuleID"], "FACE_D_D4")
+        self.assertEqual(fresh["Result"], "FAIL")
+        self.assertEqual(fresh["ItemCode"], "IC-2")
+
     def test_delayed_advance_does_not_run_after_the_operator_moves(self):
         self.assertTrue(scheduled_step_still_current(4, 4, True, False))
         # Prev/Next changed the guided index during the announcement delay.
