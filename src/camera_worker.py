@@ -135,6 +135,36 @@ def _frame_is_corrupt(frame: Optional[np.ndarray]) -> bool:
     return reason.startswith("corrupt_")
 
 
+# Repeat the last good picture across a short USB glitch, then stop scoring.
+# Saturated neon and chroma stripes pass the green-laser test, so a rejected
+# frame must never be stored as last-good or sent to the detector.
+CORRUPT_HOLD_AFTER_FRAMES = 3
+CORRUPT_HOLD_S = 1.5
+
+
+def corrupt_frame_action(
+    *,
+    has_last_good: bool,
+    corrupt_streak: int,
+    hold_age_s: Optional[float],
+) -> str:
+    """Decide what a quality-rejected frame is allowed to do.
+
+    ``drop`` — no good frame yet. Skip it. Promoting it to last-good is how a
+    camera that never locks a picture starts reporting lasers.
+    ``hold`` — keep showing and scoring the last good picture.
+    ``blind`` — show the live frame so the tile does not freeze, but report
+    every hole as no laser and do not learn this picture.
+    """
+    if not has_last_good:
+        return "drop"
+    if hold_age_s is not None and hold_age_s < CORRUPT_HOLD_S:
+        return "hold"
+    if hold_age_s is None and corrupt_streak >= CORRUPT_HOLD_AFTER_FRAMES:
+        return "hold"
+    return "blind"
+
+
 def _fmt_stats(stats: Dict[str, float]) -> str:
     return (
         f"mean={stats.get('mean', -1):.1f} val={stats.get('val_mean', -1):.1f} "
@@ -777,6 +807,40 @@ class CameraWorker:
         }
         
         return result
+
+    def _no_laser_result(self) -> Dict[str, Any]:
+        """Detection packet for a frame the quality gate rejected.
+
+        The logic engine only clears a hole when a later packet says the laser
+        is off. Dropping the packet leaves the previous hit in place, and the
+        next camera to report then finishes the pass window.
+        """
+        timestamp = datetime.now()
+        detections = []
+        for roi in self.rois:
+            detections.append({
+                'roi_id': roi['roi_id'],
+                'hole_id': roi['hole_id'],
+                'laser': False,
+                'raw_detection': False,
+                'confidence': 0.0,
+                'stable_frames': 0,
+                'intensity': 0.0,
+                'pixels': 0,
+            })
+        return {
+            'camera_id': f"CAM_{self.face}",
+            'face': self.face,
+            'usb_index': self.usb_index,
+            'timestamp': timestamp.isoformat(),
+            'timestamp_epoch': timestamp.timestamp(),
+            'detections': detections,
+            'health': {
+                'connected': self.is_connected,
+                'fps': self.fps_actual,
+                'frame_count': self.frame_count,
+            },
+        }
     
     def draw_overlays(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
         """Draw ROI ellipses/circles and detection status on frame."""
@@ -954,36 +1018,40 @@ class CameraWorker:
                     every=20,
                 )
 
-            # Short hold on neon USB garbage, then force a refresh so tiles cannot
-            # freeze on last-good for minutes.
+            # Short hold on neon USB garbage, then show the live tile without
+            # scoring it. A rejected frame is not a laser reading.
             live_bad = last_quality != "ok"
+            inspect_frame: Optional[np.ndarray] = frame
             if live_bad:
                 corrupt_streak += 1
-                if self._last_good is not None and corrupt_streak >= 3:
+                hold_age = None if hold_since is None else (now - hold_since)
+                action = corrupt_frame_action(
+                    has_last_good=self._last_good is not None,
+                    corrupt_streak=corrupt_streak,
+                    hold_age_s=hold_age,
+                )
+                if action == "drop":
+                    self.trace.bump("drop_no_last_good")
+                    continue
+                if action == "hold":
                     if hold_since is None:
                         hold_since = now
                         holding = True
                         self.trace.emit(
                             f"HOLD last-good start reason={last_quality} {_fmt_stats(last_stats)}"
                         )
-                    if now - hold_since < 1.5:
-                        frame = self._last_good
-                        self.trace.bump("hold_frames")
-                    else:
+                    frame = self._last_good
+                    inspect_frame = frame
+                    self.trace.bump("hold_frames")
+                else:
+                    if holding:
                         self.trace.emit(
-                            f"HOLD expired — forcing live frame reason={last_quality} {_fmt_stats(last_stats)}"
+                            f"HOLD expired — showing live frame, not inspecting it "
+                            f"reason={last_quality} {_fmt_stats(last_stats)}"
                         )
-                        hold_since = None
                         holding = False
-                        corrupt_streak = 0
-                        self._last_good = frame.copy()
                         self.trace.bump("hold_refresh")
-                elif self._last_good is None:
-                    if corrupt_streak < 5:
-                        self.trace.bump("drop_no_last_good")
-                        continue
-                    self._last_good = frame.copy()
-                    corrupt_streak = 0
+                    inspect_frame = None
             else:
                 if holding:
                     self.trace.emit(f"HOLD end — live OK {_fmt_stats(last_stats)}")
@@ -1028,7 +1096,12 @@ class CameraWorker:
                     self._handle_command(cmd)
 
             t_proc = time.time()
-            result = self.process_frame(frame)
+            if inspect_frame is None:
+                for hole_id in self.detection_history:
+                    self.detection_history[hole_id] = []
+                result = self._no_laser_result()
+            else:
+                result = self.process_frame(inspect_frame)
             proc_ms = (time.time() - t_proc) * 1000.0
             if proc_ms > 80:
                 self.trace.maybe("slow_proc", f"process_frame slow {proc_ms:.0f}ms", first=3, every=20)
