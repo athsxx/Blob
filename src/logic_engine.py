@@ -15,7 +15,7 @@ import time
 import json
 import os
 from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, List, Optional, Set, Tuple, Any
 from datetime import datetime
 from enum import Enum
 import re
@@ -26,6 +26,10 @@ VALID_FACES = frozenset("ABCDEF")
 
 # Default sustained detection window (seconds)
 DEFAULT_STABLE_WINDOW_S = 2.0
+
+# How long a carried-over exit must stay dark before it can pass the next hole.
+# One dropped frame at 5 fps must not count as the rod being removed.
+GUIDED_REARM_DARK_S = 0.5
 
 
 def _engine_hole_key(value: Any) -> str:
@@ -41,6 +45,48 @@ def _engine_hole_key(value: Any) -> str:
         text = text.replace("Ã˜", "Ø").replace("Ã¸", "Ø").replace("Ø", "DIA ")
         text = re.sub(r"[^0-9A-Z.]+", " ", text)
         return " ".join(text.split())
+
+
+def _rule_output_pairs(rule: Optional[Dict], mandatory_only: bool) -> Set[Tuple[str, str]]:
+    """(face, canonical hole) pairs a rule watches."""
+    pairs: Set[Tuple[str, str]] = set()
+    if not rule:
+        return pairs
+    for output in rule.get("expected_outputs") or []:
+        if mandatory_only and not output.get("mandatory", True):
+            continue
+        hole = _engine_hole_key(output.get("hole_id"))
+        if not hole:
+            continue
+        for face in parse_face_to_faces(str(output.get("face", ""))):
+            pairs.add((face, hole))
+    return pairs
+
+
+def rule_outputs_already_satisfied(previous: Optional[Dict], nxt: Optional[Dict]) -> bool:
+    """True when light from `previous` can already satisfy every mandatory output of `nxt`.
+
+    Guided mode judges a hole only by its exit lights. Two inserts that share
+    every exit (DALIA A14 then A15 both light SEC. M-M and A13) will PASS the
+    second hole if the rod is left in the first.
+    """
+    if not previous or not nxt:
+        return False
+    previous_pairs = _rule_output_pairs(previous, mandatory_only=False)
+    mandatory = [
+        output for output in (nxt.get("expected_outputs") or [])
+        if output.get("mandatory", True)
+    ]
+    if not mandatory:
+        return False
+    for output in mandatory:
+        hole = _engine_hole_key(output.get("hole_id"))
+        faces = parse_face_to_faces(str(output.get("face", "")))
+        if not hole or not faces:
+            return False
+        if not any((face, hole) in previous_pairs for face in faces):
+            return False
+    return True
 
 
 def rule_has_unavailable_output(rule: Dict, available_faces: Set[str]) -> bool:
@@ -304,6 +350,9 @@ class LogicEngine:
         self._guided_sequence: List[Dict] = []   # built by build_guided_sequence()
         self._guided_step_index: int = 0          # current step index
         self._active_rule_id: Optional[str] = None  # rule being evaluated now
+        # (face, canonical hole) -> time that hole was first seen dark, or None
+        # while it is still lit. Holes here cannot PASS the active step.
+        self._stale_holes: Dict[Tuple[str, str], Optional[float]] = {}
         
         # Load rules
         self.load_rules(rules_file)
@@ -395,17 +444,14 @@ class LogicEngine:
             expected_keys.append(out_key)
             
             if len(candidate_faces) == 1:
-                if self.global_state.is_hole_detected(candidate_faces[0], out_hole):
+                if self._output_lit(candidate_faces[0], out_hole, detected_holes):
                     detected_keys.append(out_key)
                 elif mandatory:
                     missing_keys.append(out_key)
             else:
                 # Compound/alternative: satisfied if ANY candidate face has hole detected
-                canon_out = _engine_hole_key(out_hole)
                 if any(
-                    self.global_state.is_hole_detected(f, out_hole)
-                    or f"{f}_{out_hole}" in detected_holes
-                    or f"{f}_{canon_out}" in detected_holes
+                    self._output_lit(f, out_hole, detected_holes)
                     for f in candidate_faces
                 ):
                     detected_keys.append(out_key)
@@ -413,7 +459,68 @@ class LogicEngine:
                     missing_keys.append(out_key)
         
         return expected_keys, detected_keys, missing_keys
-    
+
+    def _output_lit(self, face: str, hole_id: str, detected_holes: Set[str]) -> bool:
+        """True when this exit counts toward the active rule.
+
+        A hole carried over from the previous insert is listed in `_stale_holes`
+        until its own camera has reported it dark. Leftover light must not pass
+        the next hole.
+        """
+        canon = _engine_hole_key(hole_id)
+        if self.guided_mode and (face, canon) in self._stale_holes:
+            return False
+        if self.global_state.is_hole_detected(face, hole_id):
+            return True
+        return (
+            f"{face}_{hole_id}" in detected_holes
+            or f"{face}_{canon}" in detected_holes
+        )
+
+    def _arm_stale_outputs(self, rule: Dict) -> None:
+        """Ignore these exits until their camera sees them go dark."""
+        self._stale_holes = {}
+        for face, hole in _rule_output_pairs(rule, mandatory_only=True):
+            self._stale_holes[(face, hole)] = None
+        if self._stale_holes:
+            print(
+                "[LogicEngine] Waiting for carried-over exit light to clear "
+                f"({len(self._stale_holes)} hole(s)) before the next PASS"
+            )
+
+    def _observe_stale_outputs(self, camera_result: Dict[str, Any], now: float) -> None:
+        """Drop a carried-over exit once its camera has seen it dark long enough."""
+        if not self._stale_holes:
+            return
+        source_face = str(camera_result.get("face") or "")
+        if not source_face:
+            return
+        reported: Dict[str, bool] = {}
+        for det in camera_result.get("detections") or []:
+            canon = _engine_hole_key(det.get("hole_id"))
+            if not canon:
+                continue
+            # Any lit report wins. A second ROI with the same name must not
+            # look dark just because it was listed first.
+            reported[canon] = bool(det.get("laser")) or reported.get(canon, False)
+
+        finished = []
+        for key, since in list(self._stale_holes.items()):
+            face, canon = key
+            if face != source_face or canon not in reported:
+                continue
+            if reported[canon]:
+                self._stale_holes[key] = None
+                continue
+            if since is None:
+                self._stale_holes[key] = now
+            elif now - since >= GUIDED_REARM_DARK_S:
+                finished.append(key)
+        for key in finished:
+            self._stale_holes.pop(key, None)
+        if finished and not self._stale_holes:
+            print("[LogicEngine] Carried-over exit light cleared — next insert can pass")
+
     def _is_input_active(self, rule: Dict, detected_holes: Set[str]) -> bool:
         """Check if a rule's input is currently detected."""
         input_face = rule.get('input', {}).get('face', '')
@@ -461,17 +568,18 @@ class LogicEngine:
 
         # ── GUIDED MODE: evaluate only the active rule ──
         if self.guided_mode:
-            return self._update_state_guided(now)
+            return self._update_state_guided(now, camera_result)
 
         # ── REACTIVE MODE: evaluate all rules (legacy behaviour) ──
         return self._update_state_reactive(now)
 
-    def _update_state_guided(self, now: float) -> List[RuleEvaluationResult]:
+    def _update_state_guided(self, now: float, camera_result: Dict[str, Any]) -> List[RuleEvaluationResult]:
         """
         Guided mode evaluation: only check the current active rule.
         Only the expected output holes for that rule are considered;
         all other camera detections are ignored.
         """
+        self._observe_stale_outputs(camera_result, now)
         if not self._active_rule_id:
             return []
 
@@ -895,6 +1003,12 @@ class LogicEngine:
         if step_index < 0 or step_index >= len(self._guided_sequence):
             return
 
+        previous_rule_id = self._active_rule_id
+        previous_index = self._guided_step_index
+        previous_step = None
+        if previous_rule_id and 0 <= previous_index < len(self._guided_sequence):
+            previous_step = self._guided_sequence[previous_index]
+
         self._guided_step_index = step_index
         step = self._guided_sequence[step_index]
         new_rule_id = step['rule_id']
@@ -912,9 +1026,22 @@ class LogicEngine:
         if tracker:
             tracker.reset()
 
-        # Clear stale ROI detections from previous step so lingering detections cannot carry over
+        # Clear stale ROI detections from previous step so lingering detections cannot carry over.
+        # The next camera frame puts still-lit exits straight back, so a hole whose
+        # exits were already satisfied by the previous insert stays ignored until
+        # those exits actually go dark.
         self.global_state.roi_states.clear()
         self.global_state.detection_times.clear()
+
+        entered_new_step = previous_rule_id is not None and (
+            previous_index != step_index or previous_rule_id != new_rule_id
+        )
+        previous_rule = self.rule_by_id.get((previous_step or {}).get("rule_id", ""))
+        new_rule = self.rule_by_id.get(new_rule_id)
+        if entered_new_step and rule_outputs_already_satisfied(previous_rule, new_rule):
+            self._arm_stale_outputs(new_rule or {})
+        else:
+            self._stale_holes = {}
 
         print(f"[LogicEngine] Guided step set to {step_index + 1}/{len(self._guided_sequence)}: "
               f"{step['input_face']}_{step['input_hole']} → rule {new_rule_id}")
